@@ -1,0 +1,2 @@
+option('prefer-afbc', type: 'boolean', value: 'true',
+       description: 'Prefer ARM AFBC modifier (default: true)')

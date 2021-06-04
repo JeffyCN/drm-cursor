@@ -1,0 +1,24 @@
+/*
+ *  Copyright (c) 2021, Jeffy Chen <jeffy.chen@rock-chips.com>
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ */
+
+#ifndef __DRM_EGL_H_
+#define __DRM_EGL_H_
+
+#include <stdint.h>
+
+void *egl_init_ctx(int fd, int width, int height, int format, uint64_t modifier);
+void egl_free_ctx(void *data);
+uint32_t egl_convert_fb(void *data, uint32_t handle, int width, int height, int x, int y);
+
+#endif 
