@@ -13,12 +13,15 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -28,7 +31,7 @@
 
 #include "drm_egl.h"
 
-#define LIBDRM_CURSOR_VERSION "1.0.0~20210615"
+#define LIBDRM_CURSOR_VERSION "1.1.0~20210618"
 
 #define DRM_LOG(tag, ...) { \
   fprintf(g_log_fp ?: stderr, tag ": %s(%d) ", __func__, __LINE__); \
@@ -60,6 +63,15 @@
 #define DRM_AFBC_MODIFIER \
   (DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_SPARSE) | \
     DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16))
+
+#define DRM_CURSOR_CONFIG_FILE "/etc/drm-cursor.conf"
+#define OPT_DEBUG "debug="
+#define OPT_LOG_FILE "log-file="
+#define OPT_ALLOW_OVERLAY "allow-overlay="
+#define OPT_PREFER_AFBC "prefer-afbc="
+#define OPT_PREFER_PLANE "prefer-plane="
+#define OPT_PREFER_PLANES "prefer-planes="
+#define OPT_CRTC_BLOCKLIST "crtc-blocklist="
 
 #define DRM_MAX_CRTCS 8
 
@@ -110,6 +122,7 @@ typedef struct {
   void *egl_ctx;
 
   int use_afbc_modifier;
+  int blocked;
 } drm_crtc;
 
 typedef struct {
@@ -122,7 +135,10 @@ typedef struct {
   drmModeRes *res;
 
   int prefer_afbc_modifier;
+  int allow_overlay;
   int inited;
+
+  char *configs;
 } drm_ctx;
 
 static drm_ctx g_drm_ctx = { 0, };
@@ -235,12 +251,76 @@ static int drm_plane_has_afbc(drm_ctx *ctx, drm_plane *plane)
   return -1;
 }
 
+static void drm_load_configs(drm_ctx *ctx)
+{
+  struct stat st;
+  const char *file = DRM_CURSOR_CONFIG_FILE;
+  char *ptr, *tmp;
+  int fd;
+
+  if (stat(file, &st) < 0)
+    return;
+
+  fd = open(file, O_RDONLY);
+  if (fd < 0)
+    return;
+
+  ptr =
+    mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (ptr == MAP_FAILED)
+    goto out_close_fd;
+
+  ctx->configs = malloc(st.st_size + 1);
+  if (!ctx->configs)
+    goto out_unmap;
+
+  memcpy(ctx->configs, ptr, st.st_size);
+  ctx->configs[st.st_size] = '\0';
+
+  tmp = ctx->configs;
+  while ((tmp = strchr(tmp, '#'))) {
+    while (*tmp != '\n' && *tmp != '\0')
+      *tmp++ = '\n';
+  }
+
+out_unmap:
+  munmap(ptr, st.st_size);
+out_close_fd:
+  close(fd);
+}
+
+static const char *drm_get_config(drm_ctx *ctx, const char *name)
+{
+  static char buf[4096];
+  const char *config;
+
+  if (!ctx->configs)
+    return NULL;
+
+  config = strstr(ctx->configs, name);
+  if (!config)
+    return NULL;
+
+  sscanf(config + strlen(name), "%4095s", buf);
+  return buf;
+}
+
+static int drm_get_config_int(drm_ctx *ctx, const char *name, int def)
+{
+  const char *config = drm_get_config(ctx, name);
+
+  if (config)
+    return atoi(config);
+
+  return def;
+}
+
 static drm_ctx *drm_get_ctx(int fd)
 {
   drm_ctx *ctx = &g_drm_ctx;
   uint32_t prefer_planes[DRM_MAX_CRTCS] = { 0, };
   uint32_t prefer_plane = 0;
-  char *env;
+  const char *config;
   int i;
 
   if (ctx->inited)
@@ -250,48 +330,65 @@ static drm_ctx *drm_get_ctx(int fd)
   if (ctx->fd < 0)
     return NULL;
 
-  if (getenv("DRM_DEBUG") || !access("/tmp/.drm_cursor_debug", F_OK))
-    g_drm_debug = 1;
-
-  env = getenv("DRM_CURSOR_LOG_FILE");
-  g_log_fp = fopen(env ?: "/var/log/drm-cursor.log", "wb+");
-
   ctx->fd = dup(fd);
   if (ctx->fd < 0)
     return NULL;
+
+  drm_load_configs(ctx);
+
+  g_drm_debug =
+    drm_get_config_int(ctx, OPT_DEBUG, 0);
+
+  if (getenv("DRM_DEBUG") || !access("/tmp/.drm_cursor_debug", F_OK))
+    g_drm_debug = 1;
+
+  if (!(config = getenv("DRM_CURSOR_LOG_FILE")))
+    config = drm_get_config(ctx, OPT_LOG_FILE);
+
+  g_log_fp = fopen(config ?: "/var/log/drm-cursor.log", "wb+");
 
 #ifdef PREFER_AFBC_MODIFIER
   ctx->prefer_afbc_modifier = 1;
 #endif
 
-  env = getenv("DRM_CURSOR_PREFER_AFBC");
-  if (env)
-    ctx->prefer_afbc_modifier = atoi(env);
+  ctx->prefer_afbc_modifier =
+    drm_get_config_int(ctx, OPT_PREFER_AFBC, ctx->prefer_afbc_modifier);
 
   if (ctx->prefer_afbc_modifier)
     DRM_DEBUG("prefer ARM AFBC modifier\n");
+
+  ctx->allow_overlay =
+    drm_get_config_int(ctx, OPT_ALLOW_OVERLAY, 0);
+
+  if (ctx->allow_overlay)
+    DRM_DEBUG("allow overlay planes\n");
 
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
 
   ctx->res = drmModeGetResources(ctx->fd);
   if (!ctx->res)
-    goto err_close_fd;
+    goto err_free_configs;
 
   ctx->pres = drmModeGetPlaneResources(ctx->fd);
   if (!ctx->pres)
     goto err_free_res;
 
-  /* Allow specifying prefer planes */
-  env = getenv("DRM_CURSOR_PREFER_PLANE");
-  prefer_plane = env ? atoi(env) : 0;
-  env = getenv("DRM_CURSOR_PREFER_PLANES");
-  for (i = 0; env && i < ctx->res->count_crtcs; i++) {
-    prefer_planes[i] = atoi(env);
+  /* Allow specifying prefer plane */
+  if ((config = getenv("DRM_CURSOR_PREFER_PLANE")))
+    prefer_plane = atoi(config);
+  else
+    prefer_plane = drm_get_config_int(ctx, OPT_PREFER_PLANE, 0);
 
-    env = strchr(env, ':');
-    if (env)
-      env++;
+  /* Allow specifying prefer planes */
+  if (!(config = getenv("DRM_CURSOR_PREFER_PLANES")))
+    config = drm_get_config(ctx, OPT_PREFER_PLANES);
+  for (i = 0; config && i < ctx->res->count_crtcs; i++) {
+    prefer_planes[i] = atoi(config);
+
+    config = strchr(config, ',');
+    if (config)
+      config++;
   }
 
   /* Fetch all CRTCs */
@@ -319,7 +416,25 @@ static drm_ctx *drm_get_ctx(int fd)
   if (!ctx->num_crtcs)
     goto err_free_pres;
 
-  if (getenv("DRM_DEBUG")) {
+  config = drm_get_config(ctx, OPT_CRTC_BLOCKLIST);
+  for (i = 0; config && i < ctx->res->count_crtcs; i++) {
+    int crtc_id = atoi(config);
+
+    for (int j = 0; j < ctx->num_crtcs; j++) {
+      drm_crtc *crtc = &ctx->crtcs[j];
+      if (crtc->crtc_id != crtc_id)
+        continue;
+
+      DRM_DEBUG("CRTC: %d blocked\n", crtc_id);
+      crtc->blocked = 1;
+    }
+
+    config = strchr(config, ',');
+    if (config)
+      config++;
+  }
+
+  if (g_drm_debug) {
     /* Dump planes for debugging */
     for (i = 0; i < ctx->pres->count_planes; i++) {
       drm_plane *plane = drm_get_plane(ctx, ctx->pres->planes[i]);
@@ -365,7 +480,8 @@ err_free_pres:
   drmModeFreePlaneResources(ctx->pres);
 err_free_res:
   drmModeFreeResources(ctx->res);
-err_close_fd:
+err_free_configs:
+  free(ctx->configs);
   close(ctx->fd);
   ctx->fd = -1;
   return NULL;
@@ -643,9 +759,11 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
       drm_crtc_bind_plane_afbc(ctx, crtc, ctx->pres->planes[i]);
   }
 
-  /* Fallback to any available plane */
-  for (i = 0; !crtc->plane_id && i < ctx->pres->count_planes; i++)
-    drm_crtc_bind_plane_force(ctx, crtc, ctx->pres->planes[i]);
+  if (ctx->allow_overlay) {
+    /* Fallback to any available overlay plane */
+    for (i = ctx->pres->count_planes - 1; !crtc->plane_id && i; i--)
+      drm_crtc_bind_plane_force(ctx, crtc, ctx->pres->planes[i]);
+  }
 
   if (!crtc->plane_id) {
     DRM_ERROR("CRTC[%d]: failed to find any plane\n", crtc->crtc_id);
@@ -689,6 +807,9 @@ static drm_crtc *drm_get_crtc(drm_ctx *ctx, uint32_t crtc_id)
   for (i = 0; i < ctx->num_crtcs; i++) {
     crtc = &ctx->crtcs[i];
     if (!crtc_id && drm_crtc_size(ctx, crtc->crtc_id, NULL, NULL) < 0)
+      continue;
+
+    if (crtc->blocked)
       continue;
 
     if (!crtc_id || crtc->crtc_id == crtc_id)
