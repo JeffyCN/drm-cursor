@@ -781,6 +781,7 @@ static int drm_crtc_size(drm_ctx *ctx, uint32_t crtc_id,
                          int *width, int *height)
 {
   drmModeCrtcPtr c;
+  int ret;
 
   c = drmModeGetCrtc(ctx->fd, crtc_id);
   if (!c)
@@ -791,12 +792,10 @@ static int drm_crtc_size(drm_ctx *ctx, uint32_t crtc_id,
   if (height)
     *height = c->height;
 
+  ret = (c->width && c->height) ? 0 : -1;
+
   drmModeFreeCrtc(c);
-
-  if (!c->width || !c->height)
-    return -1;
-
-  return 0;
+  return ret;
 }
 
 static drm_crtc *drm_get_crtc(drm_ctx *ctx, uint32_t crtc_id)
