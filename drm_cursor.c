@@ -907,10 +907,18 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
 
   off_x = off_y = 0;
 
-#if 1 /* For edge moving */
+  /* For edge moving */
   width -= crtc->cursor_curr.width;
   height -= crtc->cursor_curr.height;
 
+  if (x < 0) {
+    off_x = x;
+    x = 0;
+  }
+  if (y < 0) {
+    off_y = y;
+    y = 0;
+  }
   if (x > width) {
     off_x = x - width;
     x = width;
@@ -919,7 +927,6 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
     off_y = y - height;
     y = height;
   }
-#endif
 
   pthread_mutex_lock(&crtc->mutex);
   if (crtc->state == ERROR) {
