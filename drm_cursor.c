@@ -31,7 +31,7 @@
 
 #include "drm_egl.h"
 
-#define LIBDRM_CURSOR_VERSION "1.1.0~20210618"
+#define LIBDRM_CURSOR_VERSION "1.1.1~20210713"
 
 #define DRM_LOG(tag, ...) { \
   fprintf(g_log_fp ?: stderr, tag ": %s(%d) ", __func__, __LINE__); \
@@ -62,7 +62,7 @@
 
 #define DRM_AFBC_MODIFIER \
   (DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_SPARSE) | \
-    DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16))
+   DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16))
 
 #define DRM_CURSOR_CONFIG_FILE "/etc/drm-cursor.conf"
 #define OPT_DEBUG "debug="
@@ -267,8 +267,7 @@ static void drm_load_configs(drm_ctx *ctx)
   if (fd < 0)
     return;
 
-  ptr =
-    mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  ptr = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (ptr == MAP_FAILED)
     goto out_close_fd;
 
@@ -338,8 +337,7 @@ static drm_ctx *drm_get_ctx(int fd)
 
   drm_load_configs(ctx);
 
-  g_drm_debug =
-    drm_get_config_int(ctx, OPT_DEBUG, 0);
+  g_drm_debug = drm_get_config_int(ctx, OPT_DEBUG, 0);
 
   if (getenv("DRM_DEBUG") || !access("/tmp/.drm_cursor_debug", F_OK))
     g_drm_debug = 1;
@@ -359,8 +357,7 @@ static drm_ctx *drm_get_ctx(int fd)
   if (ctx->prefer_afbc_modifier)
     DRM_DEBUG("prefer ARM AFBC modifier\n");
 
-  ctx->allow_overlay =
-    drm_get_config_int(ctx, OPT_ALLOW_OVERLAY, 0);
+  ctx->allow_overlay = drm_get_config_int(ctx, OPT_ALLOW_OVERLAY, 0);
 
   if (ctx->allow_overlay)
     DRM_DEBUG("allow overlay planes\n");
@@ -958,14 +955,14 @@ int drmModeSetCursor(int fd, uint32_t crtcId, uint32_t bo_handle,
   /* Init log file */
   drm_get_ctx(fd);
 
-  DRM_DEBUG("%s fd: %d crtc: %d handle: %d size: %dx%d\n",
-            __func__, fd, crtcId, bo_handle, width, height);
+  DRM_DEBUG("fd: %d crtc: %d handle: %d size: %dx%d\n",
+            fd, crtcId, bo_handle, width, height);
   return drm_set_cursor(fd, crtcId, bo_handle, width, height);
 }
 
 int drmModeMoveCursor(int fd, uint32_t crtcId, int x, int y)
 {
-  DRM_DEBUG("%s fd: %d crtc: %d position: %d,%d\n", __func__, fd, crtcId, x, y);
+  DRM_DEBUG("fd: %d crtc: %d position: %d,%d\n", fd, crtcId, x, y);
   return drm_move_cursor(fd, crtcId, x, y);
 }
 
@@ -973,7 +970,7 @@ int drmModeSetCursor2(int fd, uint32_t crtcId, uint32_t bo_handle,
                       uint32_t width, uint32_t height,
                       int32_t hot_x, int32_t hot_y)
 {
-  DRM_DEBUG("%s fd: %d crtc: %d handle: %d size: %dx%d\n",
-            __func__, fd, crtcId, bo_handle, width, height);
+  DRM_DEBUG("fd: %d crtc: %d handle: %d size: %dx%d\n",
+            fd, crtcId, bo_handle, width, height);
   return -EINVAL;
 }

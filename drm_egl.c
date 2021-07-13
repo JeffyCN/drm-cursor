@@ -274,7 +274,7 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   }
 
   if (egl_flush_surfaces(ctx) < 0)
-      goto err;
+    goto err;
 
   eglMakeCurrent(ctx->egl_display, ctx->egl_surfaces[ctx->current_surface],
                  ctx->egl_surfaces[ctx->current_surface],
