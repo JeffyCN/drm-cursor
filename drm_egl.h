@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 
-void *egl_init_ctx(int fd, int width, int height, int format, uint64_t modifier);
+void *egl_init_ctx(int fd, int num_surfaces, int width, int height, int format, uint64_t modifier);
 void egl_free_ctx(void *data);
 uint32_t egl_convert_fb(void *data, uint32_t handle, int width, int height, int x, int y);
 

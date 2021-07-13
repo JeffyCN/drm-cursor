@@ -72,6 +72,7 @@
 #define OPT_PREFER_PLANE "prefer-plane="
 #define OPT_PREFER_PLANES "prefer-planes="
 #define OPT_CRTC_BLOCKLIST "crtc-blocklist="
+#define OPT_NUM_SURFACES "num-surfaces="
 
 #define DRM_MAX_CRTCS 8
 
@@ -136,6 +137,7 @@ typedef struct {
 
   int prefer_afbc_modifier;
   int allow_overlay;
+  int num_surfaces;
   int inited;
 
   char *configs;
@@ -365,6 +367,8 @@ static drm_ctx *drm_get_ctx(int fd)
 
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+
+  ctx->num_surfaces = drm_get_config_int(ctx, OPT_NUM_SURFACES, 8);
 
   ctx->res = drmModeGetResources(ctx->fd);
   if (!ctx->res)
@@ -633,7 +637,8 @@ static int drm_crtc_create_fb(drm_ctx *ctx, drm_crtc *crtc,
       modifier = 0;
     }
 
-    crtc->egl_ctx = egl_init_ctx(ctx->fd, width, height, format, modifier);
+    crtc->egl_ctx = egl_init_ctx(ctx->fd, ctx->num_surfaces,
+                                 width, height, format, modifier);
     if (!crtc->egl_ctx) {
       DRM_ERROR("CRTC[%d]: failed to init egl ctx\n", crtc->crtc_id);
       return -1;

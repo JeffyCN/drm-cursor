@@ -60,18 +60,18 @@ static const char fragment_shader_source[] =
 "}\n";
 
 /* HACK: use multiple surfaces to avoid AFBC corruption */
-#define NUM_SURFACES 4
+#define MAX_NUM_SURFACES 64
 
 typedef struct {
   int fd;
 
   struct gbm_device *gbm_dev;
-  struct gbm_surface *gbm_surfaces[NUM_SURFACES];
+  struct gbm_surface *gbm_surfaces[MAX_NUM_SURFACES];
 
   EGLDisplay egl_display;
   EGLContext egl_context;
   EGLConfig egl_config;
-  EGLSurface egl_surfaces[NUM_SURFACES];
+  EGLSurface egl_surfaces[MAX_NUM_SURFACES];
   GLuint vertex_shader, fragment_shader, program;
 
   int width;
@@ -81,6 +81,7 @@ typedef struct {
   uint64_t modifier;
 
   int current_surface;
+  int num_surfaces;
 } egl_ctx;
 
 void egl_free_ctx(void *data)
@@ -101,7 +102,7 @@ void egl_free_ctx(void *data)
     if (ctx->vertex_shader)
       glDeleteShader(ctx->vertex_shader);
 
-    for (i = 0; i < NUM_SURFACES; i++) {
+    for (i = 0; i < ctx->num_surfaces; i++) {
       if (ctx->egl_surfaces[i] != EGL_NO_SURFACE)
         eglDestroySurface(ctx->egl_display, ctx->egl_surfaces[i]);
     }
@@ -113,7 +114,7 @@ void egl_free_ctx(void *data)
     eglReleaseThread();
   }
 
-  for (i = 0; i < NUM_SURFACES; i++) {
+  for (i = 0; i < ctx->num_surfaces; i++) {
     if (ctx->gbm_surfaces[i])
       gbm_surface_destroy(ctx->gbm_surfaces[i]);
   }
@@ -136,21 +137,21 @@ static int egl_flush_surfaces(egl_ctx *ctx)
   eglMakeCurrent(ctx->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                  EGL_NO_CONTEXT);
 
-  for (i = 0; i < NUM_SURFACES; i++) {
+  for (i = 0; i < ctx->num_surfaces; i++) {
     if (ctx->egl_surfaces[i] != EGL_NO_SURFACE) {
       eglDestroySurface(ctx->egl_display, ctx->egl_surfaces[i]);
       ctx->egl_surfaces[i] = EGL_NO_SURFACE;
     }
   }
 
-  for (i = 0; i < NUM_SURFACES; i++) {
+  for (i = 0; i < ctx->num_surfaces; i++) {
     if (ctx->gbm_surfaces[i]) {
       gbm_surface_destroy(ctx->gbm_surfaces[i]);
       ctx->gbm_surfaces[i] = NULL;
     }
   }
 
-  for (i = 0; i < NUM_SURFACES; i++) {
+  for (i = 0; i < ctx->num_surfaces; i++) {
     ctx->gbm_surfaces[i] =
       gbm_surface_create_with_modifiers(ctx->gbm_dev, ctx->width, ctx->height,
                                         ctx->format, &ctx->modifier, 1);
@@ -172,7 +173,7 @@ static int egl_flush_surfaces(egl_ctx *ctx)
   return 0;
 }
 
-void *egl_init_ctx(int fd, int width, int height,
+void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
                    int format, uint64_t modifier)
 {
   PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display;
@@ -203,6 +204,11 @@ void *egl_init_ctx(int fd, int width, int height,
     EGL_NONE
   };
 
+  if (num_surfaces > MAX_NUM_SURFACES) {
+    EGL_ERROR("too much surfaces: %d > %d\n", num_surfaces, MAX_NUM_SURFACES);
+    return NULL;
+  }
+
   get_platform_display = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
   if (!get_platform_display)
     return NULL;
@@ -215,6 +221,7 @@ void *egl_init_ctx(int fd, int width, int height,
   ctx->height = height;
   ctx->format = format;
   ctx->modifier = modifier;
+  ctx->num_surfaces = num_surfaces;
 
   ctx->fd = dup(fd);
   if (ctx->fd < 0)
@@ -450,7 +457,7 @@ uint32_t egl_convert_fb(void *data, uint32_t handle, int width, int height,
     return 0;
   }
 
-  ctx->current_surface = (ctx->current_surface + 1) % NUM_SURFACES;
+  ctx->current_surface = (ctx->current_surface + 1) % ctx->num_surfaces;
   eglMakeCurrent(ctx->egl_display, ctx->egl_surfaces[ctx->current_surface],
                  ctx->egl_surfaces[ctx->current_surface],
                  ctx->egl_context);
