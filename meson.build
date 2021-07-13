@@ -26,7 +26,7 @@ libdrm_cursor_srcs = [
     'drm_egl.c',
 ]
 
-extra_cflags = []
+extra_cflags = [ '-D_GNU_SOURCE' ]
 
 if get_option('prefer-afbc')
     message('Prefer ARM AFBC modifier')

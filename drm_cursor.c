@@ -362,7 +362,6 @@ static drm_ctx *drm_get_ctx(int fd)
   if (ctx->allow_overlay)
     DRM_DEBUG("allow overlay planes\n");
 
-  drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
 
   ctx->num_surfaces = drm_get_config_int(ctx, OPT_NUM_SURFACES, 8);
@@ -658,8 +657,18 @@ static void *drm_crtc_thread_fn(void *data)
   drm_ctx *ctx = drm_get_ctx(-1);
   drm_crtc *crtc = data;
   drm_cursor_state cursor_state;
+  char name[256];
 
   DRM_DEBUG("CRTC[%d]: thread started\n", crtc->crtc_id);
+
+  /**
+   * The new DRM driver doesn't allow setting atomic cap for Xorg.
+   * Let's use a custom thread name to workaround that.
+   */
+  snprintf(name, sizeof(name), "drm-cursor[%d]", crtc->crtc_id);
+  pthread_setname_np(crtc->thread, name);
+
+  drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
 
   while (1) {
     /* Wait for new cursor state */
