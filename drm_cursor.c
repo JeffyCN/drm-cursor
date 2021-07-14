@@ -109,7 +109,7 @@ typedef struct {
   uint32_t crtc_id;
   uint32_t crtc_pipe;
 
-  uint32_t plane_id;
+  drm_plane *plane;
   uint32_t prefer_plane_id;
 
   drm_cursor_state cursor_next;
@@ -139,6 +139,7 @@ typedef struct {
   int allow_overlay;
   int num_surfaces;
   int inited;
+  int atomic;
 
   char *configs;
 } drm_ctx;
@@ -162,6 +163,63 @@ static int drm_plane_get_prop(drm_ctx *ctx, drm_plane *plane, const char *name)
   }
 
   return -1;
+}
+
+static int drm_atomic_add_plane_prop(drm_ctx *ctx, drmModeAtomicReq *request,
+                                     drm_plane *plane, const char *name,
+                                     uint64_t value)
+{
+  int prop_idx = drm_plane_get_prop(ctx, plane, name);
+  if (prop_idx < 0)
+    return -1;
+
+  return drmModeAtomicAddProperty(request, plane->plane_id,
+                                  plane->props->props[prop_idx], value);
+}
+
+static int drm_set_plane(drm_ctx *ctx, drm_crtc *crtc, drm_plane *plane,
+                         uint32_t fb, int x, int y, int w, int h)
+{
+  drmModeAtomicReq *req;
+  int ret;
+
+  if (!ctx->atomic)
+    goto legacy;
+
+  req = drmModeAtomicAlloc();
+  if (!req)
+    goto legacy;
+
+  if (!fb) {
+    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_ID", 0);
+    drm_atomic_add_plane_prop(ctx, req, plane, "FB_ID", 0);
+  } else {
+    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_ID", crtc->crtc_id);
+    drm_atomic_add_plane_prop(ctx, req, plane, "FB_ID", fb);
+    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_X", 0);
+    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_Y", 0);
+    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_W", w << 16);
+    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_H", h << 16);
+    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_X", x);
+    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_Y", y);
+    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_W", w);
+    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_H", h);
+  }
+
+  ret = drmModeAtomicCommit(ctx->fd, req, DRM_MODE_ATOMIC_NONBLOCK, NULL);
+  drmModeAtomicFree(req);
+
+  if (!ret)
+    return 0;
+
+legacy:
+  if (ctx->atomic) {
+    DRM_ERROR("CRTC[%d]: failed to do atomic commit (%d)\n",
+              crtc->crtc_id, errno);
+    ctx->atomic = 0;
+  }
+  return drmModeSetPlane(ctx->fd, plane->plane_id, crtc->crtc_id, fb, 0,
+                         x, y, w, h, 0, 0, w << 16, h << 16);
 }
 
 static int drm_plane_get_prop_value(drm_ctx *ctx, drm_plane *plane,
@@ -335,6 +393,8 @@ static drm_ctx *drm_get_ctx(int fd)
   if (ctx->fd < 0)
     return NULL;
 
+  ctx->atomic = 1;
+
   drm_load_configs(ctx);
 
   g_drm_debug = drm_get_config_int(ctx, OPT_DEBUG, 0);
@@ -501,15 +561,15 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
 {
   drm_plane *plane;
   uint64_t value;
-  int i, ret = -1;
+  int i;
 
   /* CRTC already assigned */
-  if (crtc->plane_id)
+  if (crtc->plane)
     return 1;
 
   /* Plane already assigned */
   for (i = 0; i < ctx->num_crtcs; i++) {
-    if (ctx->crtcs[i].plane_id == plane_id)
+    if (ctx->crtcs[i].plane && ctx->crtcs[i].plane->plane_id == plane_id)
       return -1;
   }
 
@@ -519,38 +579,38 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
 
   /* Not for this CRTC */
   if (!(plane->plane->possible_crtcs & (1 << crtc->crtc_pipe)))
-    goto out;
+    goto err;
 
   /* Not using primary planes */
   if (drm_plane_get_prop_value(ctx, plane, "type", &value) < 0)
-    goto out;
+    goto err;
 
   if (value == DRM_PLANE_TYPE_PRIMARY)
-    goto out;
+    goto err;
 
   /* Check for overlay plane */
   if (!allow_overlay && value == DRM_PLANE_TYPE_OVERLAY)
-    goto out;
+    goto err;
 
   /* Check for AFBC modifier */
   if (drm_plane_has_afbc(ctx, plane) >= 0)
     crtc->use_afbc_modifier = 1;
   else if (use_afbc)
-    goto out;
+    goto err;
 
   DRM_DEBUG("CRTC[%d]: bind plane: %d%s\n", crtc->crtc_id, plane->plane_id,
             crtc->use_afbc_modifier ? "(AFBC)" : "");
 
-  crtc->plane_id = plane->plane_id;
+  crtc->plane = plane;
 
   /* Set maximum ZPOS */
   drm_plane_set_prop_max(ctx, plane, "zpos");
   drm_plane_set_prop_max(ctx, plane, "ZPOS");
 
-  ret = 0;
-out:
+  return 0;
+err:
   drm_free_plane(plane);
-  return ret;
+  return -1;
 }
 
 #define drm_crtc_disable_cursor(ctx, crtc) \
@@ -559,6 +619,7 @@ out:
 static int drm_crtc_update_cursor(drm_ctx *ctx, drm_crtc *crtc,
                                   drm_cursor_state *cursor_state)
 {
+  drm_plane *plane = crtc->plane;
   uint32_t old_fb = crtc->cursor_curr.fb;
   uint32_t fb;
   int x, y, w, h, ret;
@@ -567,9 +628,7 @@ static int drm_crtc_update_cursor(drm_ctx *ctx, drm_crtc *crtc,
   if (!cursor_state) {
     if (old_fb) {
       DRM_DEBUG("CRTC[%d]: disabling cursor\n", crtc->crtc_id);
-      drmModeSetPlane(ctx->fd, crtc->plane_id, 0, 0, 0,
-                      0, 0, 0, 0, 0, 0, 0, 0);
-
+      drm_set_plane(ctx, crtc, plane, 0, 0, 0, 0, 0);
       drmModeRmFB(ctx->fd, old_fb);
     }
 
@@ -592,10 +651,9 @@ static int drm_crtc_update_cursor(drm_ctx *ctx, drm_crtc *crtc,
   h = crtc->cursor_curr.height;
 
   DRM_DEBUG("CRTC[%d]: setting fb: %d (%dx%d) on plane: %d at (%d,%d)\n",
-            crtc->crtc_id, fb, w, h, crtc->plane_id, x, y);
+            crtc->crtc_id, fb, w, h, plane->plane_id, x, y);
 
-  ret = drmModeSetPlane(ctx->fd, crtc->plane_id, crtc->crtc_id, fb, 0,
-                        x, y, w, h, 0, 0, w << 16, h << 16);
+  ret = drm_set_plane(ctx, crtc, plane, fb, x, y, w, h);
   if (ret)
     DRM_ERROR("CRTC[%d]: failed to set plane (%d)\n", crtc->crtc_id, errno);
 
@@ -742,6 +800,12 @@ error:
   pthread_mutex_lock(&crtc->mutex);
   DRM_DEBUG("CRTC[%d]: thread error\n", crtc->crtc_id);
   crtc->state = ERROR;
+
+  if (crtc->plane) {
+    drm_free_plane(crtc->plane);
+    crtc->plane = NULL;
+  }
+
   pthread_cond_signal(&crtc->cond);
   pthread_mutex_unlock(&crtc->mutex);
 
@@ -753,7 +817,7 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
   int i;
 
   /* CRTC already assigned */
-  if (crtc->plane_id)
+  if (crtc->plane)
     return 1;
 
   /* Try specific plane */
@@ -761,22 +825,22 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
     drm_crtc_bind_plane_force(ctx, crtc, crtc->prefer_plane_id);
 
   /* Try cursor plane */
-  for (i = 0; !crtc->plane_id && i < ctx->pres->count_planes; i++)
+  for (i = 0; !crtc->plane && i < ctx->pres->count_planes; i++)
     drm_crtc_bind_plane_cursor(ctx, crtc, ctx->pres->planes[i]);
 
   /* Try AFBC plane */
   if (ctx->prefer_afbc_modifier) {
-    for (i = 0; !crtc->plane_id && i < ctx->pres->count_planes; i++)
+    for (i = 0; !crtc->plane && i < ctx->pres->count_planes; i++)
       drm_crtc_bind_plane_afbc(ctx, crtc, ctx->pres->planes[i]);
   }
 
   if (ctx->allow_overlay) {
     /* Fallback to any available overlay plane */
-    for (i = ctx->pres->count_planes - 1; !crtc->plane_id && i; i--)
+    for (i = ctx->pres->count_planes - 1; !crtc->plane && i; i--)
       drm_crtc_bind_plane_force(ctx, crtc, ctx->pres->planes[i]);
   }
 
-  if (!crtc->plane_id) {
+  if (!crtc->plane) {
     DRM_ERROR("CRTC[%d]: failed to find any plane\n", crtc->crtc_id);
     return -1;
   }
