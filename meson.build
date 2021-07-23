@@ -50,6 +50,13 @@ pkgconfig.generate(
     description : 'A hook of drm cursor APIs to fake cursor plane.',
 )
 
+configure_file(
+    input : 'drm-cursor.conf.sample',
+    output : 'drm-cursor.conf',
+    install_dir : get_option('sysconfdir'),
+    copy : true,
+)
+
 executable(
     'cursor-test',
     [ libdrm_cursor_srcs, 'test.c' ],
