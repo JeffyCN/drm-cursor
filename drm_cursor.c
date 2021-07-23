@@ -31,7 +31,7 @@
 
 #include "drm_egl.h"
 
-#define LIBDRM_CURSOR_VERSION "1.1.2~20210714"
+#define LIBDRM_CURSOR_VERSION "1.1.3~20210723"
 
 #define DRM_LOG(tag, ...) { \
   fprintf(g_log_fp ?: stderr, tag ": %s(%d) ", __func__, __LINE__); \

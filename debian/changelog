@@ -1,3 +1,12 @@
+libdrm-cursor (1.1.3-1) unstable; urgency=medium
+
+  * Add COPYING
+  * meson: Not installing test program by default
+  * Support hiding cursors
+  * meson: Install sample configure file
+
+ -- Jeffy Chen <jeffy.chen@rock-chips.com>  Fri, 23 Jul 2021 15:04:28 +0800
+
 libdrm-cursor (1.1.2-1) unstable; urgency=medium
 
   * Set ASYNC_COMMIT atomic prop for Rockchip
