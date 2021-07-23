@@ -55,5 +55,5 @@ executable(
     [ libdrm_cursor_srcs, 'test.c' ],
     c_args : extra_cflags,
     dependencies : libdrm_cursor_deps,
-    install : true,
+    install : get_option('install-test'),
 )
