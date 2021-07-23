@@ -67,6 +67,7 @@
 #define DRM_CURSOR_CONFIG_FILE "/etc/drm-cursor.conf"
 #define OPT_DEBUG "debug="
 #define OPT_LOG_FILE "log-file="
+#define OPT_HIDE "hide="
 #define OPT_ALLOW_OVERLAY "allow-overlay="
 #define OPT_PREFER_AFBC "prefer-afbc="
 #define OPT_PREFER_PLANE "prefer-plane="
@@ -140,6 +141,7 @@ typedef struct {
   int num_surfaces;
   int inited;
   int atomic;
+  int hide;
 
   char *configs;
 } drm_ctx;
@@ -406,6 +408,10 @@ static drm_ctx *drm_get_ctx(int fd)
     config = drm_get_config(ctx, OPT_LOG_FILE);
 
   g_log_fp = fopen(config ?: "/var/log/drm-cursor.log", "wb+");
+
+  ctx->hide = drm_get_config_int(ctx, OPT_HIDE, 0);
+  if (ctx->hide)
+    DRM_INFO("invisible cursors\n");
 
 #ifdef PREFER_AFBC_MODIFIER
   ctx->prefer_afbc_modifier = 1;
@@ -909,6 +915,9 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
   if (!ctx)
     return -1;
 
+  if (ctx->hide)
+    return 0;
+
   crtc = drm_get_crtc(ctx, crtc_id);
   if (!crtc)
     return -1;
@@ -961,6 +970,9 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   ctx = drm_get_ctx(fd);
   if (!ctx)
     return -1;
+
+  if (ctx->hide)
+    return 0;
 
   crtc = drm_get_crtc(ctx, crtc_id);
   if (!crtc)
