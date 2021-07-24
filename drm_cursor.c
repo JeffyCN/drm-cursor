@@ -119,6 +119,7 @@ static const char *drm_plane_prop_names[] = {
 
 typedef struct {
   uint32_t plane_id;
+  int cursor_plane;
   drmModePlane *plane;
   drmModeObjectProperties *props;
   int prop_ids[PLANE_PROP_MAX];
@@ -244,7 +245,7 @@ static int drm_set_plane(drm_ctx *ctx, drm_crtc *crtc, drm_plane *plane,
   drmModeAtomicReq *req;
   int ret = 0;
 
-  if (!ctx->atomic)
+  if (plane->cursor_plane || !ctx->atomic)
     goto legacy;
 
   req = drmModeAtomicAlloc();
@@ -668,6 +669,10 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
   if (!allow_overlay && value == DRM_PLANE_TYPE_OVERLAY)
     goto err;
 
+  plane->cursor_plane = value == DRM_PLANE_TYPE_CURSOR;
+  if (plane->cursor_plane)
+    DRM_INFO("CRTC[%d]: using cursor plane\n", crtc->crtc_id);
+
   /* Check for AFBC modifier */
   if (drm_plane_has_afbc(ctx, plane) >= 0)
     crtc->use_afbc_modifier = 1;
@@ -800,18 +805,20 @@ static void *drm_crtc_thread_fn(void *data)
   snprintf(name, sizeof(name), "drm-cursor[%d]", crtc->crtc_id);
   pthread_setname_np(crtc->thread, name);
 
-  drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
+  if (!plane->cursor_plane) {
+    drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
 
-  /* Reflush props with atomic cap enabled */
-  drmModeFreeObjectProperties(plane->props);
-  plane->props = drmModeObjectGetProperties(ctx->fd, plane->plane_id,
-                                            DRM_MODE_OBJECT_PLANE);
-  if (!plane->props)
-    goto error;
+    /* Reflush props with atomic cap enabled */
+    drmModeFreeObjectProperties(plane->props);
+    plane->props = drmModeObjectGetProperties(ctx->fd, plane->plane_id,
+                                              DRM_MODE_OBJECT_PLANE);
+    if (!plane->props)
+      goto error;
 
-  /* Set maximum ZPOS */
-  drm_plane_set_prop_max(ctx, plane, PLANE_PROP_zpos);
-  drm_plane_set_prop_max(ctx, plane, PLANE_PROP_ZPOS);
+    /* Set maximum ZPOS */
+    drm_plane_set_prop_max(ctx, plane, PLANE_PROP_zpos);
+    drm_plane_set_prop_max(ctx, plane, PLANE_PROP_ZPOS);
+  }
 
   crtc->last_update_time = drm_curr_time();
 
