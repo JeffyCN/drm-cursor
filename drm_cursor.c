@@ -77,10 +77,46 @@
 
 #define DRM_MAX_CRTCS 8
 
+typedef enum {
+  PLANE_PROP_type = 0,
+  PLANE_PROP_IN_FORMATS,
+  PLANE_PROP_zpos,
+  PLANE_PROP_ZPOS,
+  PLANE_PROP_CRTC_ID,
+  PLANE_PROP_FB_ID,
+  PLANE_PROP_SRC_X,
+  PLANE_PROP_SRC_Y,
+  PLANE_PROP_SRC_W,
+  PLANE_PROP_SRC_H,
+  PLANE_PROP_CRTC_X,
+  PLANE_PROP_CRTC_Y,
+  PLANE_PROP_CRTC_W,
+  PLANE_PROP_CRTC_H,
+  PLANE_PROP_MAX,
+} drm_plane_prop;
+
+static const char *drm_plane_prop_names[] = {
+  [PLANE_PROP_type] = "type",
+  [PLANE_PROP_IN_FORMATS] = "IN_FORMATS",
+  [PLANE_PROP_zpos] = "zpos",
+  [PLANE_PROP_ZPOS] = "ZPOS",
+  [PLANE_PROP_CRTC_ID] = "CRTC_ID",
+  [PLANE_PROP_FB_ID] = "FB_ID",
+  [PLANE_PROP_SRC_X] = "SRC_X",
+  [PLANE_PROP_SRC_Y] = "SRC_Y",
+  [PLANE_PROP_SRC_W] = "SRC_W",
+  [PLANE_PROP_SRC_H] = "SRC_H",
+  [PLANE_PROP_CRTC_X] = "CRTC_X",
+  [PLANE_PROP_CRTC_Y] = "CRTC_Y",
+  [PLANE_PROP_CRTC_W] = "CRTC_W",
+  [PLANE_PROP_CRTC_H] = "CRTC_H",
+};
+
 typedef struct {
   uint32_t plane_id;
   drmModePlane *plane;
   drmModeObjectProperties *props;
+  int prop_ids[PLANE_PROP_MAX];
 } drm_plane;
 
 typedef struct {
@@ -153,15 +189,19 @@ static drm_ctx g_drm_ctx = { 0, };
 static int g_drm_debug = 0;
 static FILE *g_log_fp = NULL;
 
-static int drm_plane_get_prop(drm_ctx *ctx, drm_plane *plane, const char *name)
+static int drm_plane_get_prop(drm_ctx *ctx, drm_plane *plane, drm_plane_prop p)
 {
   drmModePropertyPtr prop;
   int i;
 
+  if (plane->prop_ids[p])
+    return plane->prop_ids[p];
+
   for (i = 0; i < plane->props->count_props; i++) {
     prop = drmModeGetProperty(ctx->fd, plane->props->props[i]);
-    if (prop && !strcmp(prop->name, name)) {
+    if (prop && !strcmp(prop->name, drm_plane_prop_names[p])) {
       drmModeFreeProperty(prop);
+      plane->prop_ids[p] = i;
       return i;
     }
     drmModeFreeProperty(prop);
@@ -171,10 +211,10 @@ static int drm_plane_get_prop(drm_ctx *ctx, drm_plane *plane, const char *name)
 }
 
 static int drm_atomic_add_plane_prop(drm_ctx *ctx, drmModeAtomicReq *request,
-                                     drm_plane *plane, const char *name,
+                                     drm_plane *plane, drm_plane_prop p,
                                      uint64_t value)
 {
-  int prop_idx = drm_plane_get_prop(ctx, plane, name);
+  int prop_idx = drm_plane_get_prop(ctx, plane, p);
   if (prop_idx < 0)
     return -1;
 
@@ -186,7 +226,7 @@ static int drm_set_plane(drm_ctx *ctx, drm_crtc *crtc, drm_plane *plane,
                          uint32_t fb, int x, int y, int w, int h)
 {
   drmModeAtomicReq *req;
-  int ret;
+  int ret = 0;
 
   if (!ctx->atomic)
     goto legacy;
@@ -196,29 +236,32 @@ static int drm_set_plane(drm_ctx *ctx, drm_crtc *crtc, drm_plane *plane,
     goto legacy;
 
   if (!fb) {
-    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_ID", 0);
-    drm_atomic_add_plane_prop(ctx, req, plane, "FB_ID", 0);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_CRTC_ID, 0);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_FB_ID, 0);
   } else {
-    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_ID", crtc->crtc_id);
-    drm_atomic_add_plane_prop(ctx, req, plane, "FB_ID", fb);
-    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_X", 0);
-    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_Y", 0);
-    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_W", w << 16);
-    drm_atomic_add_plane_prop(ctx, req, plane, "SRC_H", h << 16);
-    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_X", x);
-    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_Y", y);
-    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_W", w);
-    drm_atomic_add_plane_prop(ctx, req, plane, "CRTC_H", h);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane,
+                                     PLANE_PROP_CRTC_ID, crtc->crtc_id);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_FB_ID, fb);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_SRC_X, 0);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_SRC_Y, 0);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane,
+                                     PLANE_PROP_SRC_W, w << 16);
+    ret |= drm_atomic_add_plane_prop(ctx, req,
+                                     plane, PLANE_PROP_SRC_H, h << 16);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_CRTC_X, x);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_CRTC_Y, y);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_CRTC_W, w);
+    ret |= drm_atomic_add_plane_prop(ctx, req, plane, PLANE_PROP_CRTC_H, h);
   }
 
-  ret = drmModeAtomicCommit(ctx->fd, req, DRM_MODE_ATOMIC_NONBLOCK, NULL);
+  ret |= drmModeAtomicCommit(ctx->fd, req, DRM_MODE_ATOMIC_NONBLOCK, NULL);
   drmModeAtomicFree(req);
 
-  if (!ret)
+  if (ret >= 0)
     return 0;
 
 legacy:
-  if (ctx->atomic) {
+  if (ret < 0 && ctx->atomic) {
     DRM_ERROR("CRTC[%d]: failed to do atomic commit (%d)\n",
               crtc->crtc_id, errno);
     ctx->atomic = 0;
@@ -228,9 +271,9 @@ legacy:
 }
 
 static int drm_plane_get_prop_value(drm_ctx *ctx, drm_plane *plane,
-                                    const char *name, uint64_t *value)
+                                    drm_plane_prop p, uint64_t *value)
 {
-  int prop_idx = drm_plane_get_prop(ctx, plane, name);
+  int prop_idx = drm_plane_get_prop(ctx, plane, p);
   if (prop_idx < 0)
     return -1;
 
@@ -239,10 +282,10 @@ static int drm_plane_get_prop_value(drm_ctx *ctx, drm_plane *plane,
 }
 
 static int drm_plane_set_prop_max(drm_ctx *ctx, drm_plane *plane,
-                                  const char *name)
+                                  drm_plane_prop p)
 {
   drmModePropertyPtr prop;
-  int prop_idx = drm_plane_get_prop(ctx, plane, name);
+  int prop_idx = drm_plane_get_prop(ctx, plane, p);
   if (prop_idx < 0)
     return -1;
 
@@ -252,7 +295,8 @@ static int drm_plane_set_prop_max(drm_ctx *ctx, drm_plane *plane,
                             plane->props->props[prop_idx],
                             prop->values[prop->count_values - 1]);
   DRM_DEBUG("set plane %d prop: %s to max: %"PRIu64"\n",
-            plane->plane_id, name, prop->values[prop->count_values - 1]);
+            plane->plane_id, drm_plane_prop_names[p],
+            prop->values[prop->count_values - 1]);
   drmModeFreeProperty(prop);
   return 0;
 }
@@ -294,7 +338,7 @@ static int drm_plane_has_afbc(drm_ctx *ctx, drm_plane *plane)
   uint64_t value;
   int i;
 
-  if (drm_plane_get_prop_value(ctx, plane, "IN_FORMATS", &value) < 0)
+  if (drm_plane_get_prop_value(ctx, plane, PLANE_PROP_IN_FORMATS, &value) < 0)
     return -1;
 
   blob = drmModeGetPropertyBlob(ctx->fd, value);
@@ -516,7 +560,7 @@ static drm_ctx *drm_get_ctx(int fd)
 
       has_afbc = !(drm_plane_has_afbc(ctx, plane) < 0);
 
-      drm_plane_get_prop_value(ctx, plane, "type", &value);
+      drm_plane_get_prop_value(ctx, plane, PLANE_PROP_type, &value);
       switch (value) {
       case DRM_PLANE_TYPE_PRIMARY:
         type = "primary";
@@ -591,7 +635,7 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
     goto err;
 
   /* Not using primary planes */
-  if (drm_plane_get_prop_value(ctx, plane, "type", &value) < 0)
+  if (drm_plane_get_prop_value(ctx, plane, PLANE_PROP_type, &value) < 0)
     goto err;
 
   if (value == DRM_PLANE_TYPE_PRIMARY)
@@ -611,10 +655,6 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
             crtc->use_afbc_modifier ? "(AFBC)" : "");
 
   crtc->plane = plane;
-
-  /* Set maximum ZPOS */
-  drm_plane_set_prop_max(ctx, plane, "zpos");
-  drm_plane_set_prop_max(ctx, plane, "ZPOS");
 
   return 0;
 err:
@@ -723,6 +763,7 @@ static void *drm_crtc_thread_fn(void *data)
 {
   drm_ctx *ctx = drm_get_ctx(-1);
   drm_crtc *crtc = data;
+  drm_plane *plane = crtc->plane;
   drm_cursor_state cursor_state;
   char name[256];
 
@@ -736,6 +777,17 @@ static void *drm_crtc_thread_fn(void *data)
   pthread_setname_np(crtc->thread, name);
 
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
+
+  /* Reflush props with atomic cap enabled */
+  drmModeFreeObjectProperties(plane->props);
+  plane->props = drmModeObjectGetProperties(ctx->fd, plane->plane_id,
+                                            DRM_MODE_OBJECT_PLANE);
+  if (!plane->props)
+    goto error;
+
+  /* Set maximum ZPOS */
+  drm_plane_set_prop_max(ctx, plane, PLANE_PROP_zpos);
+  drm_plane_set_prop_max(ctx, plane, PLANE_PROP_ZPOS);
 
   while (1) {
     /* Wait for new cursor state */
