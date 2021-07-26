@@ -79,6 +79,7 @@
 #define OPT_CRTC_BLOCKLIST "crtc-blocklist="
 #define OPT_NUM_SURFACES "num-surfaces="
 #define OPT_MAX_FPS "max-fps="
+#define OPT_ATOMIC "atomic="
 
 #define DRM_MAX_CRTCS 8
 
@@ -462,8 +463,6 @@ static drm_ctx *drm_get_ctx(int fd)
   if (ctx->fd < 0)
     return NULL;
 
-  ctx->atomic = 1;
-
   drm_load_configs(ctx);
 
   g_drm_debug = drm_get_config_int(ctx, OPT_DEBUG, 0);
@@ -475,6 +474,9 @@ static drm_ctx *drm_get_ctx(int fd)
     config = drm_get_config(ctx, OPT_LOG_FILE);
 
   g_log_fp = fopen(config ?: "/var/log/drm-cursor.log", "wb+");
+
+  ctx->atomic = drm_get_config_int(ctx, OPT_ATOMIC, 1);
+  DRM_INFO("atomic drm API %s\n", ctx->atomic ? "enabled" : "disabled");
 
   ctx->hide = drm_get_config_int(ctx, OPT_HIDE, 0);
   if (ctx->hide)
