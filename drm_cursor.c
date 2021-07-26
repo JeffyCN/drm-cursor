@@ -87,6 +87,7 @@ typedef enum {
   PLANE_PROP_IN_FORMATS,
   PLANE_PROP_zpos,
   PLANE_PROP_ZPOS,
+  PLANE_PROP_ASYNC_COMMIT,
   PLANE_PROP_CRTC_ID,
   PLANE_PROP_FB_ID,
   PLANE_PROP_SRC_X,
@@ -105,6 +106,7 @@ static const char *drm_plane_prop_names[] = {
   [PLANE_PROP_IN_FORMATS] = "IN_FORMATS",
   [PLANE_PROP_zpos] = "zpos",
   [PLANE_PROP_ZPOS] = "ZPOS",
+  [PLANE_PROP_ASYNC_COMMIT] = "ASYNC_COMMIT",
   [PLANE_PROP_CRTC_ID] = "CRTC_ID",
   [PLANE_PROP_FB_ID] = "FB_ID",
   [PLANE_PROP_SRC_X] = "SRC_X",
@@ -170,6 +172,7 @@ typedef struct {
 
   int use_afbc_modifier;
   int blocked;
+  int async_commit;
 
   uint64_t last_update_time;
 } drm_crtc;
@@ -245,7 +248,7 @@ static int drm_set_plane(drm_ctx *ctx, drm_crtc *crtc, drm_plane *plane,
   drmModeAtomicReq *req;
   int ret = 0;
 
-  if (plane->cursor_plane || !ctx->atomic)
+  if (plane->cursor_plane || crtc->async_commit || !ctx->atomic)
     goto legacy;
 
   req = drmModeAtomicAlloc();
@@ -818,6 +821,12 @@ static void *drm_crtc_thread_fn(void *data)
     /* Set maximum ZPOS */
     drm_plane_set_prop_max(ctx, plane, PLANE_PROP_zpos);
     drm_plane_set_prop_max(ctx, plane, PLANE_PROP_ZPOS);
+
+    /* Set async commit for Rockchip BSP kernel */
+    crtc->async_commit =
+      !drm_plane_set_prop_max(ctx, plane, PLANE_PROP_ASYNC_COMMIT);
+    if (crtc->async_commit)
+      DRM_INFO("CRTC[%d]: using async commit\n", crtc->crtc_id);
   }
 
   crtc->last_update_time = drm_curr_time();
