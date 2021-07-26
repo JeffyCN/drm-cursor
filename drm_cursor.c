@@ -19,9 +19,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -76,6 +78,7 @@
 #define OPT_PREFER_PLANES "prefer-planes="
 #define OPT_CRTC_BLOCKLIST "crtc-blocklist="
 #define OPT_NUM_SURFACES "num-surfaces="
+#define OPT_MAX_FPS "max-fps="
 
 #define DRM_MAX_CRTCS 8
 
@@ -166,6 +169,8 @@ typedef struct {
 
   int use_afbc_modifier;
   int blocked;
+
+  uint64_t last_update_time;
 } drm_crtc;
 
 typedef struct {
@@ -183,6 +188,7 @@ typedef struct {
   int inited;
   int atomic;
   int hide;
+  int min_interval;
 
   char *configs;
 } drm_ctx;
@@ -190,6 +196,14 @@ typedef struct {
 static drm_ctx g_drm_ctx = { 0, };
 static int g_drm_debug = 0;
 static FILE *g_log_fp = NULL;
+
+static inline uint64_t drm_curr_time(void)
+{
+  struct timeval tv;
+
+  gettimeofday(&tv, NULL);
+  return tv.tv_sec + tv.tv_usec / 1000;
+}
 
 static int drm_plane_get_prop(drm_ctx *ctx, drm_plane *plane, drm_plane_prop p)
 {
@@ -431,7 +445,7 @@ static drm_ctx *drm_get_ctx(int fd)
   uint32_t prefer_planes[DRM_MAX_CRTCS] = { 0, };
   uint32_t prefer_plane = 0;
   const char *config;
-  int i;
+  int i, max_fps;
 
   if (ctx->inited)
     return ctx;
@@ -480,6 +494,13 @@ static drm_ctx *drm_get_ctx(int fd)
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
 
   ctx->num_surfaces = drm_get_config_int(ctx, OPT_NUM_SURFACES, 8);
+
+  max_fps = drm_get_config_int(ctx, OPT_MAX_FPS, 0);
+  if (max_fps <= 0)
+    max_fps = 60;
+
+  ctx->min_interval = 1000 / max_fps - 1;
+  DRM_INFO("max fps: %d\n", max_fps);
 
   ctx->res = drmModeGetResources(ctx->fd);
   if (!ctx->res)
@@ -767,6 +788,7 @@ static void *drm_crtc_thread_fn(void *data)
   drm_crtc *crtc = data;
   drm_plane *plane = crtc->plane;
   drm_cursor_state cursor_state;
+  uint64_t duration;
   char name[256];
 
   DRM_DEBUG("CRTC[%d]: thread started\n", crtc->crtc_id);
@@ -790,6 +812,8 @@ static void *drm_crtc_thread_fn(void *data)
   /* Set maximum ZPOS */
   drm_plane_set_prop_max(ctx, plane, PLANE_PROP_zpos);
   drm_plane_set_prop_max(ctx, plane, PLANE_PROP_ZPOS);
+
+  crtc->last_update_time = drm_curr_time();
 
   while (1) {
     /* Wait for new cursor state */
@@ -852,6 +876,11 @@ next:
       pthread_cond_signal(&crtc->cond);
     }
     pthread_mutex_unlock(&crtc->mutex);
+
+    duration = drm_curr_time() - crtc->last_update_time;
+    if (duration < ctx->min_interval)
+      usleep((ctx->min_interval - duration) * 1000);
+    crtc->last_update_time = drm_curr_time();;
   }
 
 error:

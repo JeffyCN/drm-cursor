@@ -3,6 +3,7 @@
 # debug=1
 # log-file=
 # hide=1 # hide cursors
+# max-fps=60
 # allow-overlay=1 # allowing overlay planes
 # prefer-afbc=0 # prefer plane with AFBC modifier supported
 # num-surfaces=8 # num of egl surfaces to avoid edge moving corruption
