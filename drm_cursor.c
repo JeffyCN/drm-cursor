@@ -33,7 +33,7 @@
 
 #include "drm_egl.h"
 
-#define LIBDRM_CURSOR_VERSION "1.1.3~20210723"
+#define LIBDRM_CURSOR_VERSION "1.2.0~20210726"
 
 #define DRM_LOG(tag, ...) { \
   struct timeval tv; gettimeofday(&tv, NULL); \

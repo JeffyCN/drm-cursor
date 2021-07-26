@@ -1,3 +1,15 @@
+libdrm-cursor (1.2.0-1) unstable; urgency=medium
+
+  * Cache CRTC size
+  * Rework atomic API flow
+  * Add timestamp in drm logs
+  * Support limiting cursor FPS
+  * Force legacy drm API for cursor planes
+  * Use legacy drm API when kernel supports async commit
+  * Support disabling atomic drm API
+
+ -- Jeffy Chen <jeffy.chen@rock-chips.com>  Mon, 26 Jul 2021 12:16:50 +0800
+
 libdrm-cursor (1.1.3-1) unstable; urgency=medium
 
   * Add COPYING
@@ -9,7 +21,8 @@ libdrm-cursor (1.1.3-1) unstable; urgency=medium
 
 libdrm-cursor (1.1.2-1) unstable; urgency=medium
 
-  * Set ASYNC_COMMIT atomic prop for Rockchip
+  * Support setting atomic cap for Xorg
+  * Prefer async atomic API
 
  -- Jeffy Chen <jeffy.chen@rock-chips.com>  Wed, 14 Jul 2021 10:08:25 +0800
 
