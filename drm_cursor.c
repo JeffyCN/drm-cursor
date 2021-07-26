@@ -110,6 +110,9 @@ typedef struct {
   uint32_t crtc_id;
   uint32_t crtc_pipe;
 
+  int width;
+  int height;
+
   drm_plane *plane;
   uint32_t prefer_plane_id;
 
@@ -858,25 +861,26 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
   return 0;
 }
 
-static int drm_crtc_size(drm_ctx *ctx, uint32_t crtc_id,
-                         int *width, int *height)
+static int drm_update_crtc(drm_ctx *ctx, drm_crtc *crtc)
 {
   drmModeCrtcPtr c;
-  int ret;
 
-  c = drmModeGetCrtc(ctx->fd, crtc_id);
+  if (crtc->width > 0 && crtc->height > 0)
+    return 0;
+
+  c = drmModeGetCrtc(ctx->fd, crtc->crtc_id);
   if (!c)
     return -1;
 
-  if (width)
-    *width = c->width;
-  if (height)
-    *height = c->height;
-
-  ret = (c->width && c->height) ? 0 : -1;
+  crtc->width = c->width;
+  crtc->height = c->height;
 
   drmModeFreeCrtc(c);
-  return ret;
+
+  if (crtc->width > 0 && crtc->height > 0)
+    return 0;
+
+  return -1;
 }
 
 static drm_crtc *drm_get_crtc(drm_ctx *ctx, uint32_t crtc_id)
@@ -886,7 +890,7 @@ static drm_crtc *drm_get_crtc(drm_ctx *ctx, uint32_t crtc_id)
 
   for (i = 0; i < ctx->num_crtcs; i++) {
     crtc = &ctx->crtcs[i];
-    if (!crtc_id && drm_crtc_size(ctx, crtc->crtc_id, NULL, NULL) < 0)
+    if (!crtc_id && drm_update_crtc(ctx, crtc) < 0)
       continue;
 
     if (crtc->blocked)
@@ -981,8 +985,14 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   if (drm_crtc_prepare(ctx, crtc) < 0)
     return -1;
 
-  if (drm_crtc_size(ctx, crtc->crtc_id, &width, &height) < 0)
-    return -1;
+
+  if (crtc->width <= 0 || crtc->height <= 0) {
+    if (drm_update_crtc(ctx, crtc) < 0)
+      return -1;
+  }
+
+  width = crtc->width;
+  height = crtc->height;
 
   DRM_DEBUG("CRTC[%d]: request moving cursor to (%d,%d) in (%dx%d)\n",
             crtc->crtc_id, x, y, width, height);
