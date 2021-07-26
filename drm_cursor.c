@@ -34,7 +34,9 @@
 #define LIBDRM_CURSOR_VERSION "1.1.3~20210723"
 
 #define DRM_LOG(tag, ...) { \
-  fprintf(g_log_fp ?: stderr, tag ": %s(%d) ", __func__, __LINE__); \
+  struct timeval tv; gettimeofday(&tv, NULL); \
+  fprintf(g_log_fp ?: stderr, "[%05ld.%03ld] " tag ": %s(%d) ", \
+          tv.tv_sec % 100000, tv.tv_usec / 1000, __func__, __LINE__); \
   fprintf(g_log_fp ?: stderr, __VA_ARGS__); fflush(g_log_fp ?: stderr); }
 
 #define DRM_DEBUG(...) \
