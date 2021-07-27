@@ -966,9 +966,6 @@ static int drm_update_crtc(drm_ctx *ctx, drm_crtc *crtc)
 {
   drmModeCrtcPtr c;
 
-  if (crtc->width > 0 && crtc->height > 0)
-    return 0;
-
   c = drmModeGetCrtc(ctx->fd, crtc->crtc_id);
   if (!c)
     return -1;
@@ -1025,6 +1022,9 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
 
   crtc = drm_get_crtc(ctx, crtc_id);
   if (!crtc)
+    return -1;
+
+  if (drm_update_crtc(ctx, crtc) < 0)
     return -1;
 
   if (drm_crtc_prepare(ctx, crtc) < 0)
@@ -1087,10 +1087,8 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
     return -1;
 
 
-  if (crtc->width <= 0 || crtc->height <= 0) {
-    if (drm_update_crtc(ctx, crtc) < 0)
-      return -1;
-  }
+  if (crtc->width <= 0 || crtc->height <= 0)
+    return -1;
 
   width = crtc->width;
   height = crtc->height;
