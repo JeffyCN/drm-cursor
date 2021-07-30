@@ -152,9 +152,15 @@ static int egl_flush_surfaces(egl_ctx *ctx)
   }
 
   for (i = 0; i < ctx->num_surfaces; i++) {
-    ctx->gbm_surfaces[i] =
-      gbm_surface_create_with_modifiers(ctx->gbm_dev, ctx->width, ctx->height,
-                                        ctx->format, &ctx->modifier, 1);
+    if (!ctx->modifier)
+      ctx->gbm_surfaces[i] =
+        gbm_surface_create(ctx->gbm_dev, ctx->width, ctx->height,
+                           ctx->format, 0);
+    else
+      ctx->gbm_surfaces[i] =
+        gbm_surface_create_with_modifiers(ctx->gbm_dev,
+                                          ctx->width, ctx->height,
+                                          ctx->format, &ctx->modifier, 1);
     if (!ctx->gbm_surfaces[i]) {
       EGL_ERROR("failed to create GBM surface\n");
       return -1;
@@ -350,7 +356,7 @@ static uint32_t egl_bo_to_fb(int fd, struct gbm_bo* bo, int format,
 {
   uint32_t width = gbm_bo_get_width(bo);
   uint32_t height = gbm_bo_get_height(bo);
-  uint32_t bpp = gbm_bo_get_bpp(bo);
+  uint32_t bpp = gbm_bo_get_bpp(bo) ?: 32;
   uint32_t handles[4] = { 0 };
   uint32_t strides[4] = { 0 };
   uint32_t offsets[4] = { 0 };
