@@ -867,15 +867,15 @@ static void *drm_crtc_thread_fn(void *data)
                 crtc->crtc_id, cursor_state.x, cursor_state.off_x,
                 cursor_state.y, cursor_state.off_y);
 
-      if (crtc->cursor_curr.off_x != cursor_state.off_x ||
+      if (!crtc->cursor_curr.fb) {
+        /* Pre-moving */
+        crtc->cursor_curr = cursor_state;
+        goto next;
+      } else if (crtc->cursor_curr.off_x != cursor_state.off_x ||
           crtc->cursor_curr.off_y != cursor_state.off_y) {
         /* Edge moving */
         if (drm_crtc_create_fb(ctx, crtc, &cursor_state) < 0)
           goto error;
-      } else if (!crtc->cursor_curr.fb) {
-        /* Pre-moving */
-        crtc->cursor_curr = cursor_state;
-        goto next;
       } else {
         /* Normal moving */
         cursor_state.fb = crtc->cursor_curr.fb;
