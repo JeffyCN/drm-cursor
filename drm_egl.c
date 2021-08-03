@@ -16,7 +16,6 @@
 #include <malloc.h>
 #include <unistd.h>
 
-#include <drm_fourcc.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
@@ -26,11 +25,8 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
+#include "drm_common.h"
 #include "drm_egl.h"
-
-#define EGL_ERROR(...) { \
-  fprintf(stderr, "EGL_ERROR: %s(%d) ", __func__, __LINE__); \
-  fprintf(stderr, __VA_ARGS__); }
 
 static const GLfloat texcoords[] = {
   0.0f,  1.0f,
@@ -84,7 +80,7 @@ typedef struct {
   int num_surfaces;
 } egl_ctx;
 
-void egl_free_ctx(void *data)
+drm_private void egl_free_ctx(void *data)
 {
   egl_ctx *ctx = data;
   int i;
@@ -162,7 +158,7 @@ static int egl_flush_surfaces(egl_ctx *ctx)
                                           ctx->width, ctx->height,
                                           ctx->format, &ctx->modifier, 1);
     if (!ctx->gbm_surfaces[i]) {
-      EGL_ERROR("failed to create GBM surface\n");
+      DRM_ERROR("failed to create GBM surface\n");
       return -1;
     }
 
@@ -170,7 +166,7 @@ static int egl_flush_surfaces(egl_ctx *ctx)
       eglCreateWindowSurface(ctx->egl_display, ctx->egl_config,
                              (EGLNativeWindowType)ctx->gbm_surfaces[i], NULL);
     if (ctx->egl_surfaces[i] == EGL_NO_SURFACE) {
-      EGL_ERROR("failed to create EGL surface\n");
+      DRM_ERROR("failed to create EGL surface\n");
       return -1;
     }
   }
@@ -179,8 +175,8 @@ static int egl_flush_surfaces(egl_ctx *ctx)
   return 0;
 }
 
-void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
-                   int format, uint64_t modifier)
+drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
+                               int format, uint64_t modifier)
 {
   PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display;
 
@@ -211,17 +207,21 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   };
 
   if (num_surfaces > MAX_NUM_SURFACES) {
-    EGL_ERROR("too much surfaces: %d > %d\n", num_surfaces, MAX_NUM_SURFACES);
+    DRM_ERROR("too much surfaces: %d > %d\n", num_surfaces, MAX_NUM_SURFACES);
     return NULL;
   }
 
   get_platform_display = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
-  if (!get_platform_display)
+  if (!get_platform_display) {
+    DRM_ERROR("failed to get proc address\n");
     return NULL;
+  }
 
   ctx = calloc(1, sizeof(*ctx));
-  if (!ctx)
+  if (!ctx) {
+    DRM_ERROR("failed to alloc ctx\n");
     return NULL;
+  }
 
   ctx->width = width;
   ctx->height = height;
@@ -230,28 +230,40 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   ctx->num_surfaces = num_surfaces;
 
   ctx->fd = dup(fd);
-  if (ctx->fd < 0)
+  if (ctx->fd < 0) {
+    DRM_ERROR("failed to dup drm fd\n");
     goto err;
+  }
 
   ctx->gbm_dev = gbm_create_device(ctx->fd);
-  if (!ctx->gbm_dev)
+  if (!ctx->gbm_dev) {
+    DRM_ERROR("failed to create gbm device\n");
     goto err;
+  }
 
   ctx->egl_display = get_platform_display(EGL_PLATFORM_GBM_KHR,
                                           (void*)ctx->gbm_dev, NULL);
-  if (ctx->egl_display == EGL_NO_DISPLAY)
+  if (ctx->egl_display == EGL_NO_DISPLAY) {
+    DRM_ERROR("failed to get platform display\n");
     goto err;
+  }
 
-  if (!eglInitialize(ctx->egl_display, NULL, NULL))
+  if (!eglInitialize(ctx->egl_display, NULL, NULL)) {
+    DRM_ERROR("failed to init egl\n");
     goto err;
+  }
 
-  if (!eglBindAPI(EGL_OPENGL_ES_API))
+  if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+    DRM_ERROR("failed to bind api\n");
     goto err;
+  }
 
   if (!eglChooseConfig(ctx->egl_display, config_attribs,
                        configs, EGL_MAX_CONFIG, &num_configs) ||
-      num_configs < 1)
+      num_configs < 1) {
+    DRM_ERROR("failed to choose config\n");
     goto err;
+  }
 
   for (i = 0; i < num_configs; i++) {
     EGLint value;
@@ -265,7 +277,7 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   }
 
   if (i == num_configs) {
-    EGL_ERROR("failed to find EGL config for %4s, force using the first\n",
+    DRM_ERROR("failed to find EGL config for %4s, force using the first\n",
               (char *)&format);
     ctx->egl_config = configs[0];
   } else {
@@ -275,12 +287,14 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   ctx->egl_context = eglCreateContext(ctx->egl_display, ctx->egl_config,
                                       EGL_NO_CONTEXT, context_attribs);
   if (ctx->egl_context == EGL_NO_CONTEXT) {
-    EGL_ERROR("failed to create EGL context\n");
+    DRM_ERROR("failed to create EGL context\n");
     goto err;
   }
 
-  if (egl_flush_surfaces(ctx) < 0)
+  if (egl_flush_surfaces(ctx) < 0) {
+    DRM_ERROR("failed to flush surfaces\n");
     goto err;
+  }
 
   eglMakeCurrent(ctx->egl_display, ctx->egl_surfaces[ctx->current_surface],
                  ctx->egl_surfaces[ctx->current_surface],
@@ -293,7 +307,7 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   glGetShaderiv(ctx->vertex_shader, GL_COMPILE_STATUS, &status);
   if (!status) {
     glGetShaderInfoLog(ctx->vertex_shader, sizeof(msg), NULL, msg);
-    EGL_ERROR("failed to compile shader: %s\n", msg);
+    DRM_ERROR("failed to compile shader: %s\n", msg);
     goto err;
   }
 
@@ -304,7 +318,7 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   glGetShaderiv(ctx->fragment_shader, GL_COMPILE_STATUS, &status);
   if (!status) {
     glGetShaderInfoLog(ctx->fragment_shader, sizeof(msg), NULL, msg);
-    EGL_ERROR("failed to compile shader: %s\n", msg);
+    DRM_ERROR("failed to compile shader: %s\n", msg);
     goto err;
   }
 
@@ -316,7 +330,7 @@ void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   glGetProgramiv(ctx->program, GL_LINK_STATUS, &status);
   if (!status) {
     glGetProgramInfoLog(ctx->program, sizeof(msg), NULL, msg);
-    EGL_ERROR("failed to link: %s\n", msg);
+    DRM_ERROR("failed to link: %s\n", msg);
     goto err;
   }
 
@@ -345,8 +359,10 @@ static int egl_handle_to_fd(int fd, uint32_t handle)
   int ret;
 
   ret = drmIoctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &args);
-  if (ret < 0)
+  if (ret < 0) {
+    DRM_ERROR("failed to get fd (%d)\n", errno);
     return ret;
+  }
 
   return args.fd;
 }
@@ -378,7 +394,7 @@ static uint32_t egl_bo_to_fb(int fd, struct gbm_bo* bo, int format,
                                      DRM_MODE_FB_MODIFIERS);
 
   if (ret < 0) {
-    EGL_ERROR("failed to add fb (%d)\n", errno);
+    DRM_ERROR("failed to add fb (%d)\n", errno);
     return 0;
   }
 
@@ -416,14 +432,14 @@ static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd)
       (void *) eglGetProcAddress("glEGLImageTargetTexture2DOES");
 
   if (!create_image || !destroy_image || !image_target_texture_2d) {
-    EGL_ERROR("failed to get proc address\n");
+    DRM_ERROR("failed to get proc address\n");
     return -1;
   }
 
   image = create_image(ctx->egl_display, ctx->egl_context,
                        EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
   if (image == EGL_NO_IMAGE) {
-    EGL_ERROR("failed to create egl image: 0x%x\n", eglGetError());
+    DRM_ERROR("failed to create egl image: 0x%x\n", eglGetError());
     return -1;
   }
 
@@ -432,8 +448,8 @@ static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd)
   return 0;
 }
 
-uint32_t egl_convert_fb(void *data, uint32_t handle, int width, int height,
-                        int x, int y)
+drm_private uint32_t egl_convert_fb(void *data, uint32_t handle,
+                                    int width, int height, int x, int y)
 {
   egl_ctx *ctx = data;
   GLint position;
@@ -453,13 +469,15 @@ uint32_t egl_convert_fb(void *data, uint32_t handle, int width, int height,
     ctx->width = width;
     ctx->height = height;
 
-    if (egl_flush_surfaces(ctx) < 0)
+    if (egl_flush_surfaces(ctx) < 0) {
+      DRM_ERROR("failed to flush surfaces\n");
       return 0;
+    }
   }
 
   dma_fd = egl_handle_to_fd(ctx->fd, handle);
   if (dma_fd < 0) {
-    EGL_ERROR("failed to get dma fd\n");
+    DRM_ERROR("failed to get dma fd\n");
     return 0;
   }
 
@@ -483,7 +501,7 @@ uint32_t egl_convert_fb(void *data, uint32_t handle, int width, int height,
   glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
 
   if (egl_attach_dmabuf(ctx, dma_fd) < 0) {
-    EGL_ERROR("failed to attach dmabuf\n");
+    DRM_ERROR("failed to attach dmabuf\n");
     goto err_del_texture;
   }
 
@@ -492,7 +510,7 @@ uint32_t egl_convert_fb(void *data, uint32_t handle, int width, int height,
 
   bo = gbm_surface_lock_front_buffer(ctx->gbm_surfaces[ctx->current_surface]);
   if (!bo) {
-    EGL_ERROR("failed to get front bo\n");
+    DRM_ERROR("failed to get front bo\n");
     goto err_del_texture;
   }
 

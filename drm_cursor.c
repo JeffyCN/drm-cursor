@@ -16,57 +16,19 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
-#include <drm_fourcc.h>
 
 #include <gbm.h>
 
+#include "drm_common.h"
 #include "drm_egl.h"
-
-#define LIBDRM_CURSOR_VERSION "1.2.0~20210726"
-
-#define DRM_LOG(tag, ...) { \
-  struct timeval tv; gettimeofday(&tv, NULL); \
-  fprintf(g_log_fp ?: stderr, "[%05ld.%03ld] " tag ": %s(%d) ", \
-          tv.tv_sec % 100000, tv.tv_usec / 1000, __func__, __LINE__); \
-  fprintf(g_log_fp ?: stderr, __VA_ARGS__); fflush(g_log_fp ?: stderr); }
-
-#define DRM_DEBUG(...) \
-  if (g_drm_debug) DRM_LOG("DRM_DEBUG", __VA_ARGS__)
-
-#define DRM_INFO(...) DRM_LOG("DRM_INFO", __VA_ARGS__)
-
-#define DRM_ERROR(...) DRM_LOG("DRM_ERROR", __VA_ARGS__)
-
-#ifndef DRM_FORMAT_MOD_VENDOR_ARM
-#define DRM_FORMAT_MOD_VENDOR_ARM 0x08
-#endif
-
-#ifndef DRM_FORMAT_MOD_ARM_AFBC
-#define DRM_FORMAT_MOD_ARM_AFBC(__afbc_mode) fourcc_mod_code(ARM, __afbc_mode)
-#endif
-
-#ifndef AFBC_FORMAT_MOD_BLOCK_SIZE_16x16
-#define AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 (1ULL)
-#endif
-
-#ifndef AFBC_FORMAT_MOD_SPARSE
-#define AFBC_FORMAT_MOD_SPARSE (((__u64)1) << 6)
-#endif
-
-#define DRM_AFBC_MODIFIER \
-  (DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_SPARSE) | \
-   DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16))
 
 #define DRM_CURSOR_CONFIG_FILE "/etc/drm-cursor.conf"
 #define OPT_DEBUG "debug="
@@ -199,8 +161,8 @@ typedef struct {
 } drm_ctx;
 
 static drm_ctx g_drm_ctx = { 0, };
-static int g_drm_debug = 0;
-static FILE *g_log_fp = NULL;
+drm_private int g_drm_debug = 0;
+drm_private FILE *g_log_fp = NULL;
 
 static inline uint64_t drm_curr_time(void)
 {
