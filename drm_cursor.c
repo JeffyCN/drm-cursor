@@ -955,6 +955,8 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
     return -1;
   }
 
+  crtc->state = IDLE;
+
   pthread_cond_init(&crtc->cond, NULL);
   pthread_mutex_init(&crtc->mutex, NULL);
   pthread_create(&crtc->thread, NULL, drm_crtc_thread_fn, crtc);
@@ -1083,9 +1085,8 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   if (!crtc)
     return -1;
 
-  if (drm_crtc_prepare(ctx, crtc) < 0)
+  if (crtc->state == ERROR || drm_crtc_prepare(ctx, crtc) < 0)
     return -1;
-
 
   if (crtc->width <= 0 || crtc->height <= 0)
     return -1;
