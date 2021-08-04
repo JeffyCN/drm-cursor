@@ -691,8 +691,8 @@ static int drm_crtc_update_cursor(drm_ctx *ctx, drm_crtc *crtc,
   fb = cursor_state->fb;
   x = cursor_state->x;
   y = cursor_state->y;
-  w = crtc->cursor_curr.width;
-  h = crtc->cursor_curr.height;
+  w = cursor_state->width;
+  h = cursor_state->height;
 
   DRM_DEBUG("CRTC[%d]: setting fb: %d (%dx%d) on plane: %d at (%d,%d)\n",
             crtc->crtc_id, fb, w, h, plane->plane_id, x, y);
