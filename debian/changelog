@@ -1,3 +1,14 @@
+libdrm-cursor (1.2.2-1) unstable; urgency=medium
+
+  * Update CRTC status when setting cursor
+  * Prefer non-modifier gbm API when not using modifier
+  * Avoid moving cursor in error state
+  * Support edge pre-moving
+  * Use the same log APIs for egl
+  * Fix invalid cursor size in first commit
+
+ -- Jeffy Chen <jeffy.chen@rock-chips.com>  Wed, 04 Aug 2021 15:27:16 +0800
+
 libdrm-cursor (1.2.0-1) unstable; urgency=medium
 
   * Cache CRTC size
