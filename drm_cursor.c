@@ -1078,7 +1078,7 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
     x = width;
   }
   if (y > height) {
-    off_y = y - height;
+    off_y = y - height - 5;
     y = height;
   }
 
