@@ -90,6 +90,9 @@ typedef struct {
   int prop_ids[PLANE_PROP_MAX];
 } drm_plane;
 
+#define REQ_SET_CURSOR  1 << 0
+#define REQ_MOVE_CURSOR 1 << 1
+
 typedef struct {
   uint32_t handle;
   uint32_t fb;
@@ -103,12 +106,11 @@ typedef struct {
   int off_x;
   int off_y;
 
-  int reload;
+  int request;
 } drm_cursor_state;
 
 typedef enum {
   IDLE = 0,
-  BUSY,
   ERROR,
   PENDING,
 } drm_thread_state;
@@ -132,6 +134,8 @@ typedef struct {
   drm_thread_state state;
 
   void *egl_ctx;
+
+  int verified;
 
   int use_afbc_modifier;
   int blocked;
@@ -802,10 +806,13 @@ static void *drm_crtc_thread_fn(void *data)
       pthread_cond_wait(&crtc->cond, &crtc->mutex);
 
     cursor_state = crtc->cursor_next;
-    crtc->state = BUSY;
+    crtc->cursor_next.request = 0;
+    crtc->state = IDLE;
     pthread_mutex_unlock(&crtc->mutex);
 
-    if (cursor_state.reload) {
+    if (cursor_state.request & REQ_SET_CURSOR) {
+      cursor_state.request &= ~REQ_SET_CURSOR;
+
       /* Handle set-cursor */
       DRM_DEBUG("CRTC[%d]: set new cursor %d (%dx%d)\n",
                 crtc->crtc_id, cursor_state.handle,
@@ -823,7 +830,11 @@ static void *drm_crtc_thread_fn(void *data)
         DRM_ERROR("CRTC[%d]: failed to set cursor\n", crtc->crtc_id);
         goto error;
       }
-    } else {
+    }
+
+    if (cursor_state.request & REQ_MOVE_CURSOR) {
+      cursor_state.request &= ~REQ_MOVE_CURSOR;
+
       /* Handle move-cursor */
       DRM_DEBUG("CRTC[%d]: move cursor to (%d+%d,%d+%d)\n",
                 crtc->crtc_id, cursor_state.x, cursor_state.off_x,
@@ -849,14 +860,15 @@ static void *drm_crtc_thread_fn(void *data)
       }
     }
 
-next:
-    pthread_mutex_lock(&crtc->mutex);
-    if (crtc->state != PENDING) {
-      crtc->state = IDLE;
+    if (!crtc->verified && crtc->cursor_curr.fb) {
+      pthread_mutex_lock(&crtc->mutex);
+      DRM_INFO("CRTC[%d]: it works!\n", crtc->crtc_id);
+      crtc->verified = 1;
       pthread_cond_signal(&crtc->cond);
+      pthread_mutex_unlock(&crtc->mutex);
     }
-    pthread_mutex_unlock(&crtc->mutex);
 
+next:
     duration = drm_curr_time() - crtc->last_update_time;
     if (duration < ctx->min_interval)
       usleep((ctx->min_interval - duration) * 1000);
@@ -991,7 +1003,7 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
   if (drm_update_crtc(ctx, crtc) < 0)
     return -1;
 
-  if (drm_crtc_prepare(ctx, crtc) < 0)
+  if (crtc->state == ERROR || drm_crtc_prepare(ctx, crtc) < 0)
     return -1;
 
   DRM_DEBUG("CRTC[%d]: request setting new cursor %d (%dx%d)\n",
@@ -1007,7 +1019,7 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
   /* Update next cursor state and notify the thread */
   cursor_next = &crtc->cursor_next;
 
-  cursor_next->reload = 1;
+  cursor_next->request |= REQ_SET_CURSOR;
   cursor_next->fb = 0;
   cursor_next->handle = handle;
   cursor_next->width = width;
@@ -1015,8 +1027,7 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
   crtc->state = PENDING;
   pthread_cond_signal(&crtc->cond);
 
-  /* Wait for result (success or failed) */
-  while (crtc->state != IDLE && crtc->state != ERROR)
+  while (handle && !crtc->verified && crtc->state != ERROR)
     pthread_cond_wait(&crtc->cond, &crtc->mutex);
 
   pthread_mutex_unlock(&crtc->mutex);
@@ -1091,7 +1102,7 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   /* Update next cursor state and notify the thread */
   cursor_next = &crtc->cursor_next;
 
-  cursor_next->reload = 0;
+  cursor_next->request |= REQ_MOVE_CURSOR;
   cursor_next->fb = 0;
   cursor_next->x = x;
   cursor_next->y = y;
