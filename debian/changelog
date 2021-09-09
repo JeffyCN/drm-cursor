@@ -1,3 +1,11 @@
+libdrm-cursor (1.2.3-1) unstable; urgency=medium
+
+  * Only verify the first cursor set request
+  * Update cursor offsets before handling any requests
+  * debian: Allow error in prerm stage
+
+ -- Jeffy Chen <jeffy.chen@rock-chips.com>  Thu, 09 Sep 2021 11:41:45 +0800
+
 libdrm-cursor (1.2.2-1) unstable; urgency=medium
 
   * Update CRTC status when setting cursor
