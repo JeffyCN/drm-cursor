@@ -661,6 +661,53 @@ err:
   return -1;
 }
 
+static int drm_update_crtc(drm_ctx *ctx, drm_crtc *crtc)
+{
+  drmModeCrtcPtr c;
+
+  c = drmModeGetCrtc(ctx->fd, crtc->crtc_id);
+  if (!c)
+    return -1;
+
+  crtc->width = c->width;
+  crtc->height = c->height;
+
+  drmModeFreeCrtc(c);
+
+  if (crtc->width > 0 && crtc->height > 0)
+    return 0;
+
+  return -1;
+}
+
+static int drm_crtc_update_offsets(drm_ctx *ctx, drm_crtc *crtc,
+                                   drm_cursor_state *cursor_state)
+{
+    int width, height;
+
+    if (drm_update_crtc(ctx, crtc) < 0)
+        return -1;
+
+    width = crtc->width - cursor_state->width;
+    height = crtc->height - cursor_state->height;
+
+    cursor_state->off_x = cursor_state->off_y = 0;
+
+    if (cursor_state->x < 0)
+        cursor_state->off_x = cursor_state->x;
+
+    if (cursor_state->y < 0)
+        cursor_state->off_y = cursor_state->y;
+
+    if (cursor_state->x > width)
+        cursor_state->off_x = cursor_state->x - width;
+
+    if (cursor_state->y > height)
+        cursor_state->off_y = cursor_state->y - height;
+
+    return 0;
+}
+
 #define drm_crtc_disable_cursor(ctx, crtc) \
   drm_crtc_update_cursor(ctx, crtc, NULL)
 
@@ -687,14 +734,16 @@ static int drm_crtc_update_cursor(drm_ctx *ctx, drm_crtc *crtc,
   /* Unchanged */
   if (crtc->cursor_curr.fb == cursor_state->fb &&
       crtc->cursor_curr.x == cursor_state->x &&
-      crtc->cursor_curr.y == cursor_state->y) {
+      crtc->cursor_curr.y == cursor_state->y &&
+      crtc->cursor_curr.off_x == cursor_state->off_x &&
+      crtc->cursor_curr.off_y == cursor_state->off_y) {
     crtc->cursor_curr = *cursor_state;
     return 0;
   }
 
   fb = cursor_state->fb;
-  x = cursor_state->x;
-  y = cursor_state->y;
+  x = cursor_state->x - cursor_state->off_x;
+  y = cursor_state->y - cursor_state->off_y;
   w = cursor_state->width;
   h = cursor_state->height;
 
@@ -810,6 +859,10 @@ static void *drm_crtc_thread_fn(void *data)
     crtc->state = IDLE;
     pthread_mutex_unlock(&crtc->mutex);
 
+    /* For edge moving */
+    if (drm_crtc_update_offsets(ctx, crtc, &cursor_state) < 0)
+        goto error;
+
     if (cursor_state.request & REQ_SET_CURSOR) {
       cursor_state.request &= ~REQ_SET_CURSOR;
 
@@ -836,7 +889,7 @@ static void *drm_crtc_thread_fn(void *data)
       cursor_state.request &= ~REQ_MOVE_CURSOR;
 
       /* Handle move-cursor */
-      DRM_DEBUG("CRTC[%d]: move cursor to (%d+%d,%d+%d)\n",
+      DRM_DEBUG("CRTC[%d]: move cursor to (%d[-%d],%d[-%d])\n",
                 crtc->crtc_id, cursor_state.x, cursor_state.off_x,
                 cursor_state.y, cursor_state.off_y);
 
@@ -938,25 +991,6 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
   return 0;
 }
 
-static int drm_update_crtc(drm_ctx *ctx, drm_crtc *crtc)
-{
-  drmModeCrtcPtr c;
-
-  c = drmModeGetCrtc(ctx->fd, crtc->crtc_id);
-  if (!c)
-    return -1;
-
-  crtc->width = c->width;
-  crtc->height = c->height;
-
-  drmModeFreeCrtc(c);
-
-  if (crtc->width > 0 && crtc->height > 0)
-    return 0;
-
-  return -1;
-}
-
 static drm_crtc *drm_get_crtc(drm_ctx *ctx, uint32_t crtc_id)
 {
   drm_crtc *crtc = NULL;
@@ -998,9 +1032,6 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
 
   crtc = drm_get_crtc(ctx, crtc_id);
   if (!crtc)
-    return -1;
-
-  if (drm_update_crtc(ctx, crtc) < 0)
     return -1;
 
   if (crtc->state == ERROR || drm_crtc_prepare(ctx, crtc) < 0)
@@ -1045,7 +1076,6 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   drm_ctx *ctx;
   drm_crtc *crtc;
   drm_cursor_state *cursor_next;
-  int width, height, off_x, off_y;
 
   ctx = drm_get_ctx(fd);
   if (!ctx)
@@ -1064,34 +1094,8 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   if (crtc->width <= 0 || crtc->height <= 0)
     return -1;
 
-  width = crtc->width;
-  height = crtc->height;
-
   DRM_DEBUG("CRTC[%d]: request moving cursor to (%d,%d) in (%dx%d)\n",
-            crtc->crtc_id, x, y, width, height);
-
-  off_x = off_y = 0;
-
-  /* For edge moving */
-  width -= crtc->cursor_curr.width;
-  height -= crtc->cursor_curr.height;
-
-  if (x < 0) {
-    off_x = x;
-    x = 0;
-  }
-  if (y < 0) {
-    off_y = y;
-    y = 0;
-  }
-  if (x > width) {
-    off_x = x - width;
-    x = width;
-  }
-  if (y > height) {
-    off_y = y - height;
-    y = height;
-  }
+            crtc->crtc_id, x, y, crtc->width, crtc->height);
 
   pthread_mutex_lock(&crtc->mutex);
   if (crtc->state == ERROR) {
@@ -1106,8 +1110,6 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   cursor_next->fb = 0;
   cursor_next->x = x;
   cursor_next->y = y;
-  cursor_next->off_x = off_x;
-  cursor_next->off_y = off_y;
   crtc->state = PENDING;
   pthread_cond_signal(&crtc->cond);
   pthread_mutex_unlock(&crtc->mutex);
