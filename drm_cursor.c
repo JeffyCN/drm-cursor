@@ -472,6 +472,9 @@ static drm_ctx *drm_get_ctx(int fd)
     max_fps = 60;
 
   ctx->min_interval = 1000 / max_fps - 1;
+  if (ctx->min_interval < 0)
+    ctx->min_interval = 0;
+
   DRM_INFO("max fps: %d\n", max_fps);
 
   ctx->res = drmModeGetResources(ctx->fd);
