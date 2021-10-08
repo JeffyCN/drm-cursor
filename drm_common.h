@@ -59,6 +59,6 @@
 #define DRM_ERROR(...) DRM_LOG("DRM_ERROR", __VA_ARGS__)
 
 drm_private extern int g_drm_debug;
-drm_private FILE *g_log_fp;
+drm_private extern FILE *g_log_fp;
 
 #endif

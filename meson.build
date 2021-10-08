@@ -26,17 +26,18 @@ libdrm_cursor_srcs = [
     'drm_egl.c',
 ]
 
-extra_cflags = [ '-D_GNU_SOURCE' ]
+add_project_arguments(['-Wall', '-Werror'], language: 'c')
+
+add_project_arguments(['-D_GNU_SOURCE'], language: 'c')
 
 if get_option('prefer-afbc')
     message('Prefer ARM AFBC modifier')
-    extra_cflags += '-DPREFER_AFBC_MODIFIER'
+    add_project_arguments(['-DPREFER_AFBC_MODIFIER'], language: 'c')
 endif
 
 libdrm_cursor = shared_library(
     'drm-cursor',
     libdrm_cursor_srcs,
-    c_args : extra_cflags,
     dependencies : libdrm_cursor_deps,
     version : meson.project_version(),
     install : true,
@@ -60,7 +61,6 @@ configure_file(
 executable(
     'cursor-test',
     [ libdrm_cursor_srcs, 'test.c' ],
-    c_args : extra_cflags,
     dependencies : libdrm_cursor_deps,
     install : get_option('install-test'),
 )
