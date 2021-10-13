@@ -863,8 +863,15 @@ static void *drm_crtc_thread_fn(void *data)
     pthread_mutex_unlock(&crtc->mutex);
 
     /* For edge moving */
-    if (drm_crtc_update_offsets(ctx, crtc, &cursor_state) < 0)
-        goto error;
+    if (drm_crtc_update_offsets(ctx, crtc, &cursor_state) < 0) {
+      /* Monitor disconnected */
+      DRM_DEBUG("CRTC[%d]: disconnected!\n", crtc->crtc_id);
+
+      /* Ignore requests */
+      drm_crtc_disable_cursor(ctx, crtc);
+      crtc->cursor_curr = cursor_state;
+      goto next;
+    }
 
     if (cursor_state.request & REQ_SET_CURSOR) {
       cursor_state.request &= ~REQ_SET_CURSOR;
@@ -896,7 +903,7 @@ static void *drm_crtc_thread_fn(void *data)
                 crtc->crtc_id, cursor_state.x, cursor_state.off_x,
                 cursor_state.y, cursor_state.off_y);
 
-      if (!crtc->cursor_curr.fb) {
+      if (!crtc->cursor_curr.handle) {
         /* Pre-moving */
         crtc->cursor_curr = cursor_state;
         goto next;
@@ -955,6 +962,10 @@ error:
 static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
 {
   int i;
+
+  /* Update CRTC if unavailable */
+  if (crtc->width <= 0 || crtc->height <= 0)
+    drm_update_crtc(ctx, crtc);
 
   /* CRTC already assigned */
   if (crtc->plane)
