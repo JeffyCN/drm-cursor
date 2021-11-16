@@ -85,6 +85,8 @@ static const char *drm_plane_prop_names[] = {
 typedef struct {
   uint32_t plane_id;
   int cursor_plane;
+  int can_afbc;
+  int can_linear;
   drmModePlane *plane;
   drmModeObjectProperties *props;
   int prop_ids[PLANE_PROP_MAX];
@@ -295,6 +297,73 @@ static void drm_free_plane(drm_plane *plane)
   free(plane);
 }
 
+static void drm_plane_update_format(drm_ctx *ctx, drm_plane *plane)
+{
+  drmModePropertyBlobPtr blob;
+  struct drm_format_modifier_blob *header;
+  struct drm_format_modifier *modifiers;
+  uint32_t *formats;
+  uint64_t value;
+  int i, j;
+
+  plane->can_afbc = plane->can_linear = 0;
+
+  /* Check formats */
+	for (i = 0; i < plane->plane->count_formats; i++) {
+    if (plane->plane->formats[i] == DRM_FORMAT_ARGB8888)
+      break;
+  }
+  if (i == plane->plane->count_formats)
+    return;
+
+  if (drm_plane_get_prop_value(ctx, plane, PLANE_PROP_IN_FORMATS, &value) < 0) {
+    /* No in_formats */
+    plane->can_linear = 1;
+    return;
+	}
+
+  blob = drmModeGetPropertyBlob(ctx->fd, value);
+  if (!blob)
+    return;
+
+  header = blob->data;
+  formats = (uint32_t *) ((char *) header + header->formats_offset);
+  modifiers = (struct drm_format_modifier *)
+    ((char *) header + header->modifiers_offset);
+
+  /* Check in_formats */
+  for (i = 0; i < header->count_formats; i++) {
+    if (formats[i] == DRM_FORMAT_ARGB8888)
+      break;
+  }
+  if (i == header->count_formats)
+    goto out;
+
+  if (!header->count_modifiers) {
+    plane->can_linear = 1;
+    goto out;
+  }
+
+  /* Check modifiers */
+  for (j = 0; j < header->count_modifiers; j++) {
+    struct drm_format_modifier *mod = &modifiers[j];
+
+    if ((i < mod->offset) || (i > mod->offset + 63))
+      continue;
+    if (!(mod->formats & (1 << (i - mod->offset))))
+      continue;
+
+    if (mod->modifier == DRM_AFBC_MODIFIER)
+      plane->can_afbc = 1;
+
+    if (mod->modifier == DRM_FORMAT_MOD_LINEAR)
+      plane->can_linear = 1;
+  }
+
+out:
+  drmModeFreePropertyBlob(blob);
+}
+
 static drm_plane *drm_get_plane(drm_ctx *ctx, uint32_t plane_id)
 {
   drm_plane *plane = calloc(1, sizeof(*plane));
@@ -311,40 +380,11 @@ static drm_plane *drm_get_plane(drm_ctx *ctx, uint32_t plane_id)
   if (!plane->props)
     goto err;
 
+  drm_plane_update_format(ctx, plane);
   return plane;
 err:
   drm_free_plane(plane);
   return NULL;
-}
-
-static int drm_plane_has_afbc(drm_ctx *ctx, drm_plane *plane)
-{
-  drmModePropertyBlobPtr blob;
-  struct drm_format_modifier_blob *header;
-  struct drm_format_modifier *modifiers;
-  uint64_t value;
-  int i;
-
-  if (drm_plane_get_prop_value(ctx, plane, PLANE_PROP_IN_FORMATS, &value) < 0)
-    return -1;
-
-  blob = drmModeGetPropertyBlob(ctx->fd, value);
-  if (!blob)
-    return -1;
-
-  header = blob->data;
-  modifiers = (struct drm_format_modifier *)
-    ((char *) header + header->modifiers_offset);
-
-  for (i = 0; i < header->count_modifiers; i++) {
-    if (modifiers[i].modifier == DRM_AFBC_MODIFIER) {
-      drmModeFreePropertyBlob(blob);
-      return 0;
-    }
-  }
-
-  drmModeFreePropertyBlob(blob);
-  return -1;
 }
 
 static void drm_load_configs(drm_ctx *ctx)
@@ -551,12 +591,9 @@ static drm_ctx *drm_get_ctx(int fd)
       drm_plane *plane = drm_get_plane(ctx, ctx->pres->planes[i]);
       char *type;
       uint64_t value = 0;
-      int has_afbc;
 
       if (!plane)
         continue;
-
-      has_afbc = !(drm_plane_has_afbc(ctx, plane) < 0);
 
       drm_plane_get_prop_value(ctx, plane, PLANE_PROP_type, &value);
       switch (value) {
@@ -574,9 +611,10 @@ static drm_ctx *drm_get_ctx(int fd)
         break;
       }
 
-      DRM_DEBUG("found plane: %d[%s] crtcs: 0x%x %s\n",
+      DRM_DEBUG("found plane: %d[%s] crtcs: 0x%x %s%s\n",
                 plane->plane_id, type, plane->plane->possible_crtcs,
-                has_afbc ? "(AFBC)" : "");
+                plane->can_linear ? "(ARGB)" : "",
+                plane->can_afbc ? "(AFBC)" : "");
 
       drm_free_plane(plane);
     }
@@ -598,17 +636,17 @@ err_free_configs:
   return NULL;
 }
 
-#define drm_crtc_bind_plane_force(ctx, crtc, plane_id) \
-  drm_crtc_bind_plane(ctx, crtc, plane_id, 0, 1)
+#define drm_crtc_bind_plane_force(ctx, crtc, plane) \
+  drm_crtc_bind_plane(ctx, crtc, plane, 0, 1)
 
-#define drm_crtc_bind_plane_cursor(ctx, crtc, plane_id) \
-  drm_crtc_bind_plane(ctx, crtc, plane_id, 0, 0)
+#define drm_crtc_bind_plane_cursor(ctx, crtc, plane) \
+  drm_crtc_bind_plane(ctx, crtc, plane, 0, 0)
 
-#define drm_crtc_bind_plane_afbc(ctx, crtc, plane_id) \
-  drm_crtc_bind_plane(ctx, crtc, plane_id, 1, 0)
+#define drm_crtc_bind_plane_force_afbc(ctx, crtc, plane) \
+  drm_crtc_bind_plane(ctx, crtc, plane, 1, 1)
 
 static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
-                               int use_afbc, int allow_overlay)
+                               int must_afbc, int allow_overlay)
 {
   drm_plane *plane;
   uint64_t value;
@@ -627,6 +665,10 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
   plane = drm_get_plane(ctx, plane_id);
   if (!plane)
     return -1;
+
+  /* Unable to use */
+  if (!plane->can_afbc && !plane->can_linear)
+    goto err;
 
   /* Not for this CRTC */
   if (!(plane->plane->possible_crtcs & (1 << crtc->crtc_pipe)))
@@ -647,11 +689,11 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
   if (plane->cursor_plane)
     DRM_INFO("CRTC[%d]: using cursor plane\n", crtc->crtc_id);
 
-  /* Check for AFBC modifier */
-  if (drm_plane_has_afbc(ctx, plane) >= 0)
-    crtc->use_afbc_modifier = 1;
-  else if (use_afbc)
+  if (must_afbc && !plane->can_afbc)
     goto err;
+
+  if (ctx->prefer_afbc_modifier && plane->can_afbc)
+    crtc->use_afbc_modifier = 1;
 
   DRM_DEBUG("CRTC[%d]: bind plane: %d%s\n", crtc->crtc_id, plane->plane_id,
             crtc->use_afbc_modifier ? "(AFBC)" : "");
@@ -686,29 +728,29 @@ static int drm_update_crtc(drm_ctx *ctx, drm_crtc *crtc)
 static int drm_crtc_update_offsets(drm_ctx *ctx, drm_crtc *crtc,
                                    drm_cursor_state *cursor_state)
 {
-    int width, height;
+  int width, height;
 
-    if (drm_update_crtc(ctx, crtc) < 0)
-        return -1;
+  if (drm_update_crtc(ctx, crtc) < 0)
+    return -1;
 
-    width = crtc->width - cursor_state->width;
-    height = crtc->height - cursor_state->height;
+  width = crtc->width - cursor_state->width;
+  height = crtc->height - cursor_state->height;
 
-    cursor_state->off_x = cursor_state->off_y = 0;
+  cursor_state->off_x = cursor_state->off_y = 0;
 
-    if (cursor_state->x < 0)
-        cursor_state->off_x = cursor_state->x;
+  if (cursor_state->x < 0)
+    cursor_state->off_x = cursor_state->x;
 
-    if (cursor_state->y < 0)
-        cursor_state->off_y = cursor_state->y;
+  if (cursor_state->y < 0)
+    cursor_state->off_y = cursor_state->y;
 
-    if (cursor_state->x > width)
-        cursor_state->off_x = cursor_state->x - width;
+  if (cursor_state->x > width)
+    cursor_state->off_x = cursor_state->x - width;
 
-    if (cursor_state->y > height)
-        cursor_state->off_y = cursor_state->y - height;
+  if (cursor_state->y > height)
+    cursor_state->off_y = cursor_state->y - height;
 
-    return 0;
+  return 0;
 }
 
 #define drm_crtc_disable_cursor(ctx, crtc) \
@@ -908,7 +950,7 @@ static void *drm_crtc_thread_fn(void *data)
         crtc->cursor_curr = cursor_state;
         goto next;
       } else if (crtc->cursor_curr.off_x != cursor_state.off_x ||
-          crtc->cursor_curr.off_y != cursor_state.off_y) {
+                 crtc->cursor_curr.off_y != cursor_state.off_y) {
         /* Edge moving */
         if (drm_crtc_create_fb(ctx, crtc, &cursor_state) < 0)
           goto error;
@@ -977,18 +1019,17 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
 
   /* Try cursor plane */
   for (i = 0; !crtc->plane && i < ctx->pres->count_planes; i++)
-    drm_crtc_bind_plane_cursor(ctx, crtc, ctx->pres->planes[i]);
+    drm_crtc_bind_plane(ctx, crtc, ctx->pres->planes[i], 0, 0);
 
-  /* Try AFBC plane */
-  if (ctx->prefer_afbc_modifier) {
-    for (i = 0; !crtc->plane && i < ctx->pres->count_planes; i++)
-      drm_crtc_bind_plane_afbc(ctx, crtc, ctx->pres->planes[i]);
-  }
-
+  /* Fallback to any available overlay plane */
   if (ctx->allow_overlay) {
-    /* Fallback to any available overlay plane */
-    for (i = ctx->pres->count_planes - 1; !crtc->plane && i; i--)
-      drm_crtc_bind_plane_force(ctx, crtc, ctx->pres->planes[i]);
+    if (ctx->prefer_afbc_modifier) {
+      for (i = ctx->pres->count_planes; !crtc->plane && i; i--)
+        drm_crtc_bind_plane_force_afbc(ctx, crtc, ctx->pres->planes[i - 1]);
+    }
+
+    for (i = ctx->pres->count_planes; !crtc->plane && i; i--)
+      drm_crtc_bind_plane_force(ctx, crtc, ctx->pres->planes[i - 1]);
   }
 
   if (!crtc->plane) {
