@@ -47,9 +47,10 @@
 
 #define DRM_LOG(tag, ...) { \
   struct timeval tv; gettimeofday(&tv, NULL); \
-  fprintf(g_log_fp ?: stderr, "[%05ld.%03ld] " tag ": %s(%d) ", \
+  fprintf(g_log_fp ? g_log_fp : stderr, "[%05ld.%03ld] " tag ": %s(%d) ", \
           tv.tv_sec % 100000, tv.tv_usec / 1000, __func__, __LINE__); \
-  fprintf(g_log_fp ?: stderr, __VA_ARGS__); fflush(g_log_fp ?: stderr); }
+  fprintf(g_log_fp ? g_log_fp : stderr, __VA_ARGS__); \
+  fflush(g_log_fp ? g_log_fp : stderr); }
 
 #define DRM_DEBUG(...) \
   if (g_drm_debug) DRM_LOG("DRM_DEBUG", __VA_ARGS__)

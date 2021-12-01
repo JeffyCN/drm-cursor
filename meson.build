@@ -3,6 +3,7 @@ project(
     'c',
     version : '1.0.0',
     meson_version : '>=0.47.0',
+    default_options: ['buildtype=release', 'warning_level=3'],
 )
 
 pkgconfig = import('pkgconfig')
@@ -25,8 +26,6 @@ libdrm_cursor_srcs = [
     'drm_cursor.c',
     'drm_egl.c',
 ]
-
-add_project_arguments(['-Wall', '-Werror'], language: 'c')
 
 add_project_arguments(['-D_GNU_SOURCE'], language: 'c')
 

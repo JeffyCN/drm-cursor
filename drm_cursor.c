@@ -92,8 +92,8 @@ typedef struct {
   int prop_ids[PLANE_PROP_MAX];
 } drm_plane;
 
-#define REQ_SET_CURSOR  1 << 0
-#define REQ_MOVE_CURSOR 1 << 1
+#define REQ_SET_CURSOR  (1 << 0)
+#define REQ_MOVE_CURSOR (1 << 1)
 
 typedef struct {
   uint32_t handle;
@@ -161,7 +161,7 @@ typedef struct {
   int inited;
   int atomic;
   int hide;
-  int min_interval;
+  uint64_t min_interval;
 
   char *configs;
 } drm_ctx;
@@ -181,7 +181,7 @@ static inline uint64_t drm_curr_time(void)
 static int drm_plane_get_prop(drm_ctx *ctx, drm_plane *plane, drm_plane_prop p)
 {
   drmModePropertyPtr prop;
-  int i;
+  uint32_t i;
 
   if (plane->prop_ids[p])
     return plane->prop_ids[p];
@@ -304,7 +304,7 @@ static void drm_plane_update_format(drm_ctx *ctx, drm_plane *plane)
   struct drm_format_modifier *modifiers;
   uint32_t *formats;
   uint64_t value;
-  int i, j;
+  uint32_t i, j;
 
   plane->can_afbc = plane->can_linear = 0;
 
@@ -455,8 +455,8 @@ static drm_ctx *drm_get_ctx(int fd)
   drm_ctx *ctx = &g_drm_ctx;
   uint32_t prefer_planes[DRM_MAX_CRTCS] = { 0, };
   uint32_t prefer_plane = 0;
+  uint32_t i, max_fps, count_crtcs;
   const char *config;
-  int i, max_fps;
 
   if (ctx->inited)
     return ctx;
@@ -479,7 +479,7 @@ static drm_ctx *drm_get_ctx(int fd)
   if (!(config = getenv("DRM_CURSOR_LOG_FILE")))
     config = drm_get_config(ctx, OPT_LOG_FILE);
 
-  g_log_fp = fopen(config ?: "/var/log/drm-cursor.log", "wb+");
+  g_log_fp = fopen(config ? config : "/var/log/drm-cursor.log", "wb+");
 
   ctx->atomic = drm_get_config_int(ctx, OPT_ATOMIC, 1);
   DRM_INFO("atomic drm API %s\n", ctx->atomic ? "enabled" : "disabled");
@@ -511,9 +511,9 @@ static drm_ctx *drm_get_ctx(int fd)
   if (max_fps <= 0)
     max_fps = 60;
 
-  ctx->min_interval = 1000 / max_fps - 1;
-  if (ctx->min_interval < 0)
-    ctx->min_interval = 0;
+  ctx->min_interval = 1000 / max_fps;
+  if (ctx->min_interval)
+    ctx->min_interval--;
 
   DRM_INFO("max fps: %d\n", max_fps);
 
@@ -525,6 +525,8 @@ static drm_ctx *drm_get_ctx(int fd)
   if (!ctx->pres)
     goto err_free_res;
 
+  count_crtcs = ctx->res->count_crtcs;
+
   /* Allow specifying prefer plane */
   if ((config = getenv("DRM_CURSOR_PREFER_PLANE")))
     prefer_plane = atoi(config);
@@ -534,7 +536,7 @@ static drm_ctx *drm_get_ctx(int fd)
   /* Allow specifying prefer planes */
   if (!(config = getenv("DRM_CURSOR_PREFER_PLANES")))
     config = drm_get_config(ctx, OPT_PREFER_PLANES);
-  for (i = 0; config && i < ctx->res->count_crtcs; i++) {
+  for (i = 0; config && i < count_crtcs; i++) {
     prefer_planes[i] = atoi(config);
 
     config = strchr(config, ',');
@@ -543,7 +545,7 @@ static drm_ctx *drm_get_ctx(int fd)
   }
 
   /* Fetch all CRTCs */
-  for (i = 0; i < ctx->res->count_crtcs; i++) {
+  for (i = 0; i < count_crtcs; i++) {
     drmModeCrtcPtr c = drmModeGetCrtc(ctx->fd, ctx->res->crtcs[i]);
     drm_crtc *crtc = &ctx->crtcs[ctx->num_crtcs];
 
@@ -552,7 +554,7 @@ static drm_ctx *drm_get_ctx(int fd)
 
     crtc->crtc_id = c->crtc_id;
     crtc->crtc_pipe = i;
-    crtc->prefer_plane_id = prefer_planes[i] ?: prefer_plane;
+    crtc->prefer_plane_id = prefer_planes[i] ? prefer_planes[i] : prefer_plane;
 
     DRM_DEBUG("found %d CRTC: %d(%d) (%dx%d) prefer plane: %d\n",
               ctx->num_crtcs, c->crtc_id, i, c->width, c->height,
@@ -568,8 +570,8 @@ static drm_ctx *drm_get_ctx(int fd)
     goto err_free_pres;
 
   config = drm_get_config(ctx, OPT_CRTC_BLOCKLIST);
-  for (i = 0; config && i < ctx->res->count_crtcs; i++) {
-    int crtc_id = atoi(config);
+  for (i = 0; config && i < count_crtcs; i++) {
+    uint32_t crtc_id = atoi(config);
 
     for (int j = 0; j < ctx->num_crtcs; j++) {
       drm_crtc *crtc = &ctx->crtcs[j];
@@ -1003,7 +1005,7 @@ error:
 
 static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
 {
-  int i;
+  uint32_t i;
 
   /* Update CRTC if unavailable */
   if (crtc->width <= 0 || crtc->height <= 0)
@@ -1195,7 +1197,7 @@ int drmModeSetCursor2(int fd, uint32_t crtcId, uint32_t bo_handle,
                       uint32_t width, uint32_t height,
                       int32_t hot_x, int32_t hot_y)
 {
-  DRM_DEBUG("fd: %d crtc: %d handle: %d size: %dx%d\n",
-            fd, crtcId, bo_handle, width, height);
+  DRM_DEBUG("fd: %d crtc: %d handle: %d size: %dx%d (%d, %d)\n",
+            fd, crtcId, bo_handle, width, height, hot_x, hot_y);
   return -EINVAL;
 }
