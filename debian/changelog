@@ -1,3 +1,14 @@
+libdrm-cursor (1.3.0-1) unstable; urgency=medium
+
+  * Fix min-interval overflow when setting max fps > 1000
+  * Fix compile warning
+  * Fix error out when monitor disconnected
+  * Support using linear when AFBC also supported
+  * Prefer linear by default
+  * Fix more compile warnings
+
+ -- Jeffy Chen <jeffy.chen@rock-chips.com>  Wed, 01 Dec 2021 15:48:26 +0800
+
 libdrm-cursor (1.2.3-1) unstable; urgency=medium
 
   * Only verify the first cursor set request
