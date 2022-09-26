@@ -401,14 +401,12 @@ static uint32_t egl_bo_to_fb(int fd, struct gbm_bo* bo, int format,
   return fb;
 }
 
-static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd)
+static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd, int width, int height)
 {
   static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_target_texture_2d = NULL;
   static PFNEGLCREATEIMAGEKHRPROC create_image = NULL;
   static PFNEGLDESTROYIMAGEKHRPROC destroy_image = NULL;
   EGLImageKHR image;
-  int width = ctx->width;
-  int height = ctx->height;
 
   /* Cursor format should be ARGB8888 */
   const EGLint attrs[] = {
@@ -465,16 +463,6 @@ drm_private uint32_t egl_convert_fb(void *data, uint32_t handle,
      1.0f,  1.0f,
   };
 
-  if (width != ctx->width || height != ctx->height) {
-    ctx->width = width;
-    ctx->height = height;
-
-    if (egl_flush_surfaces(ctx) < 0) {
-      DRM_ERROR("failed to flush surfaces\n");
-      return 0;
-    }
-  }
-
   dma_fd = egl_handle_to_fd(ctx->fd, handle);
   if (dma_fd < 0) {
     DRM_ERROR("failed to get dma fd\n");
@@ -500,7 +488,7 @@ drm_private uint32_t egl_convert_fb(void *data, uint32_t handle,
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
 
-  if (egl_attach_dmabuf(ctx, dma_fd) < 0) {
+  if (egl_attach_dmabuf(ctx, dma_fd, width, height) < 0) {
     DRM_ERROR("failed to attach dmabuf\n");
     goto err_del_texture;
   }
