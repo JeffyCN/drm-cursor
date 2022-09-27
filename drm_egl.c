@@ -28,6 +28,9 @@
 #include "drm_common.h"
 #include "drm_egl.h"
 
+#define EGL_LOAD_PROC(val, type, func) \
+  do { val = (type) eglGetProcAddress(func); } while (0)
+
 static const GLfloat texcoords[] = {
   0.0f,  1.0f,
   1.0f,  1.0f,
@@ -211,7 +214,8 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
     return NULL;
   }
 
-  get_platform_display = (void *)eglGetProcAddress("eglGetPlatformDisplayEXT");
+  EGL_LOAD_PROC(get_platform_display, PFNEGLGETPLATFORMDISPLAYEXTPROC,
+                "eglGetPlatformDisplayEXT");
   if (!get_platform_display) {
     DRM_ERROR("failed to get proc address\n");
     return NULL;
@@ -372,7 +376,7 @@ static uint32_t egl_bo_to_fb(int fd, struct gbm_bo* bo, int format,
 {
   uint32_t width = gbm_bo_get_width(bo);
   uint32_t height = gbm_bo_get_height(bo);
-  uint32_t bpp = gbm_bo_get_bpp(bo) ?: 32;
+  uint32_t bpp = gbm_bo_get_bpp(bo) ? gbm_bo_get_bpp(bo) : 32;
   uint32_t handles[4] = { 0 };
   uint32_t strides[4] = { 0 };
   uint32_t offsets[4] = { 0 };
@@ -420,14 +424,16 @@ static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd, int width, int height)
   };
 
   if (!create_image)
-    create_image = (void *) eglGetProcAddress("eglCreateImageKHR");
+    EGL_LOAD_PROC(create_image, PFNEGLCREATEIMAGEKHRPROC,
+                  "eglCreateImageKHR");
 
   if (!destroy_image)
-    destroy_image = (void *) eglGetProcAddress("eglDestroyImageKHR");
+    EGL_LOAD_PROC(destroy_image, PFNEGLDESTROYIMAGEKHRPROC,
+                  "eglDestroyImageKHR");
 
   if (!image_target_texture_2d)
-    image_target_texture_2d =
-      (void *) eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    EGL_LOAD_PROC(image_target_texture_2d, PFNGLEGLIMAGETARGETTEXTURE2DOESPROC,
+                  "glEGLImageTargetTexture2DOES");
 
   if (!create_image || !destroy_image || !image_target_texture_2d) {
     DRM_ERROR("failed to get proc address\n");
