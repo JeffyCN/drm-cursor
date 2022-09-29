@@ -183,8 +183,7 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
 {
   PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display;
 
-#define EGL_MAX_CONFIG 64
-  EGLConfig configs[EGL_MAX_CONFIG];
+  EGLConfig *configs;
   EGLint num_configs;
   egl_ctx *ctx;
 
@@ -196,16 +195,6 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
 
   static const EGLint context_attribs[] = {
     EGL_CONTEXT_CLIENT_VERSION, 2,
-    EGL_NONE
-  };
-
-  static const EGLint config_attribs[] = {
-    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-    EGL_RED_SIZE, 1,
-    EGL_GREEN_SIZE, 1,
-    EGL_BLUE_SIZE, 1,
-    EGL_ALPHA_SIZE, 0,
-    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
     EGL_NONE
   };
 
@@ -262,10 +251,20 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
     goto err;
   }
 
-  if (!eglChooseConfig(ctx->egl_display, config_attribs,
-                       configs, EGL_MAX_CONFIG, &num_configs) ||
+  if (!eglGetConfigs(ctx->egl_display, NULL, 0, &num_configs) ||
       num_configs < 1) {
-    DRM_ERROR("failed to choose config\n");
+    DRM_ERROR("failed to get configs\n");
+    goto err;
+  }
+
+  configs = calloc(num_configs, sizeof(*configs));
+  if (!configs) {
+    DRM_ERROR("failed to alloc configs\n");
+    goto err;
+  }
+
+  if (!eglGetConfigs(ctx->egl_display, configs, num_configs, &num_configs)) {
+    DRM_ERROR("failed to get configs\n");
     goto err;
   }
 
@@ -281,7 +280,7 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   }
 
   if (i == num_configs) {
-    DRM_ERROR("failed to find EGL config for %4s, force using the first\n",
+    DRM_ERROR("failed to find EGL config for %.4s, force using the first\n",
               (char *)&format);
     ctx->egl_config = configs[0];
   } else {
