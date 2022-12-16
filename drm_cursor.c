@@ -124,7 +124,7 @@ typedef struct {
 
 typedef enum {
   IDLE = 0,
-  ERROR,
+  FATAL_ERROR,
   PENDING,
 } drm_thread_state;
 
@@ -323,7 +323,7 @@ static void drm_plane_update_format(drm_ctx *ctx, drm_plane *plane)
   plane->can_afbc = plane->can_linear = 0;
 
   /* Check formats */
-	for (i = 0; i < plane->plane->count_formats; i++) {
+  for (i = 0; i < plane->plane->count_formats; i++) {
     if (plane->plane->formats[i] == DRM_FORMAT_ARGB8888)
       break;
   }
@@ -334,7 +334,7 @@ static void drm_plane_update_format(drm_ctx *ctx, drm_plane *plane)
     /* No in_formats */
     plane->can_linear = 1;
     return;
-	}
+  }
 
   blob = drmModeGetPropertyBlob(ctx->fd, value);
   if (!blob)
@@ -732,23 +732,32 @@ err:
   return -1;
 }
 
+static int drm_crtc_valid(drm_crtc *crtc)
+{
+  return (crtc->width > 0 && crtc->height > 0) ? 0 : -1;
+}
+
 static int drm_update_crtc(drm_ctx *ctx, drm_crtc *crtc)
 {
   drmModeCrtcPtr c;
+  int was_connected, connected;
 
   c = drmModeGetCrtc(ctx->fd, crtc->crtc_id);
   if (!c)
     return -1;
 
+  was_connected = drm_crtc_valid(crtc) >= 0;
   crtc->width = c->width;
   crtc->height = c->height;
+  connected = drm_crtc_valid(crtc) >= 0;
 
   drmModeFreeCrtc(c);
 
-  if (crtc->width > 0 && crtc->height > 0)
-    return 0;
+  if (connected != was_connected)
+    DRM_DEBUG("CRTC[%d]: %s!\n", crtc->crtc_id, \
+              connected ? "connected" : "disconnected");
 
-  return -1;
+  return drm_crtc_valid(crtc);
 }
 
 static int drm_crtc_update_offsets(drm_ctx *ctx, drm_crtc *crtc,
@@ -955,21 +964,18 @@ static void *drm_crtc_thread_fn(void *data)
     cursor_state = crtc->cursor_next;
     crtc->cursor_next.request = 0;
     crtc->state = IDLE;
+    cursor_state.request |= crtc->cursor_curr.request; /* For retry */
     pthread_mutex_unlock(&crtc->mutex);
 
     /* For edge moving */
     if (drm_crtc_update_offsets(ctx, crtc, &cursor_state) < 0) {
-      /* Monitor disconnected */
-      DRM_DEBUG("CRTC[%d]: disconnected!\n", crtc->crtc_id);
-
-      /* Ignore requests */
+      DRM_DEBUG("CRTC[%d]: unavailable!\n", crtc->crtc_id);
       drm_crtc_disable_cursor(ctx, crtc);
-      crtc->cursor_curr = cursor_state;
-      goto next;
+      goto retry;
     }
 
     if (cursor_state.request & REQ_SET_CURSOR) {
-      cursor_state.request &= ~REQ_SET_CURSOR;
+      cursor_state.request = 0;
 
       /* Handle set-cursor */
       DRM_DEBUG("CRTC[%d]: set new cursor %d (%dx%d)\n",
@@ -988,10 +994,8 @@ static void *drm_crtc_thread_fn(void *data)
         DRM_ERROR("CRTC[%d]: failed to set cursor\n", crtc->crtc_id);
         goto error;
       }
-    }
-
-    if (cursor_state.request & REQ_MOVE_CURSOR) {
-      cursor_state.request &= ~REQ_MOVE_CURSOR;
+    } else if (cursor_state.request & REQ_MOVE_CURSOR) {
+      cursor_state.request = 0;
 
       /* Handle move-cursor */
       DRM_DEBUG("CRTC[%d]: move cursor to (%d[%d],%d[%d])\n",
@@ -1031,6 +1035,14 @@ next:
     if (duration < ctx->min_interval)
       usleep((ctx->min_interval - duration) * 1000);
     crtc->last_update_time = drm_curr_time();;
+    continue;
+retry:
+    /* Force setting cursor in next request */
+    pthread_mutex_lock(&crtc->mutex);
+    crtc->cursor_curr.request = REQ_SET_CURSOR;
+    pthread_cond_signal(&crtc->cond);
+    pthread_mutex_unlock(&crtc->mutex);
+    goto next;
   }
 
 error:
@@ -1041,7 +1053,7 @@ error:
 
   pthread_mutex_lock(&crtc->mutex);
   DRM_DEBUG("CRTC[%d]: thread error\n", crtc->crtc_id);
-  crtc->state = ERROR;
+  crtc->state = FATAL_ERROR;
 
   if (crtc->plane) {
     drm_free_plane(crtc->plane);
@@ -1059,7 +1071,7 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
   uint32_t i;
 
   /* Update CRTC if unavailable */
-  if (crtc->width <= 0 || crtc->height <= 0)
+  if (drm_crtc_valid(crtc) < 0)
     drm_update_crtc(ctx, crtc);
 
   /* CRTC already assigned */
@@ -1138,14 +1150,14 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
   if (!crtc)
     return -1;
 
-  if (crtc->state == ERROR || drm_crtc_prepare(ctx, crtc) < 0)
+  if (drm_crtc_prepare(ctx, crtc) < 0)
     return -1;
 
   DRM_DEBUG("CRTC[%d]: request setting new cursor %d (%dx%d)\n",
             crtc->crtc_id, handle, width, height);
 
   pthread_mutex_lock(&crtc->mutex);
-  if (crtc->state == ERROR) {
+  if (crtc->state == FATAL_ERROR) {
     pthread_mutex_unlock(&crtc->mutex);
     DRM_ERROR("CRTC[%d]: failed to set cursor\n", crtc->crtc_id);
     return -1;
@@ -1154,7 +1166,9 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
   /* Update next cursor state and notify the thread */
   cursor_next = &crtc->cursor_next;
 
-  cursor_next->request |= REQ_SET_CURSOR;
+  crtc->cursor_curr.request = 0;
+  cursor_next->request = REQ_SET_CURSOR;
+
   cursor_next->fb = 0;
   cursor_next->handle = handle;
   cursor_next->width = width;
@@ -1164,12 +1178,19 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
   crtc->state = PENDING;
   pthread_cond_signal(&crtc->cond);
 
-  while (handle && !crtc->verified && crtc->state != ERROR)
-    pthread_cond_wait(&crtc->cond, &crtc->mutex);
+  if (handle) {
+    /**
+     * Wait for verified or fatal error or retry.
+     * HACK: Fake retry as successed.
+     */
+    while (!crtc->verified && crtc->state != FATAL_ERROR && \
+           !crtc->cursor_curr.request)
+      pthread_cond_wait(&crtc->cond, &crtc->mutex);
+  }
 
   pthread_mutex_unlock(&crtc->mutex);
 
-  if (crtc->state == ERROR) {
+  if (crtc->state == FATAL_ERROR) {
     DRM_ERROR("CRTC[%d]: failed to set cursor\n", crtc->crtc_id);
     return -1;
   }
@@ -1194,17 +1215,17 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   if (!crtc)
     return -1;
 
-  if (crtc->state == ERROR || drm_crtc_prepare(ctx, crtc) < 0)
+  if (crtc->state == FATAL_ERROR || drm_crtc_prepare(ctx, crtc) < 0)
     return -1;
 
-  if (crtc->width <= 0 || crtc->height <= 0)
+  if (drm_crtc_valid(crtc) < 0)
     return -1;
 
   DRM_DEBUG("CRTC[%d]: request moving cursor to (%d,%d) in (%dx%d)\n",
             crtc->crtc_id, x, y, crtc->width, crtc->height);
 
   pthread_mutex_lock(&crtc->mutex);
-  if (crtc->state == ERROR) {
+  if (crtc->state == FATAL_ERROR) {
     pthread_mutex_unlock(&crtc->mutex);
     return -1;
   }
