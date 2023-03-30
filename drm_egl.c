@@ -62,8 +62,6 @@ static const char fragment_shader_source[] =
 #define MAX_NUM_SURFACES 64
 
 typedef struct {
-  int fd;
-
   struct gbm_device *gbm_dev;
   struct gbm_surface *gbm_surfaces[MAX_NUM_SURFACES];
 
@@ -120,9 +118,6 @@ drm_private void egl_free_ctx(void *data)
 
   if (ctx->gbm_dev)
     gbm_device_destroy(ctx->gbm_dev);
-
-  if (ctx->fd >= 0)
-    close(ctx->fd);
 
   free(ctx);
 }
@@ -222,13 +217,7 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
   ctx->modifier = modifier;
   ctx->num_surfaces = num_surfaces;
 
-  ctx->fd = dup(fd);
-  if (ctx->fd < 0) {
-    DRM_ERROR("failed to dup drm fd\n");
-    goto err;
-  }
-
-  ctx->gbm_dev = gbm_create_device(ctx->fd);
+  ctx->gbm_dev = gbm_create_device(fd);
   if (!ctx->gbm_dev) {
     DRM_ERROR("failed to create gbm device\n");
     goto err;
@@ -451,7 +440,7 @@ static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd, int width, int height)
   return 0;
 }
 
-drm_private uint32_t egl_convert_fb(void *data, uint32_t handle,
+drm_private uint32_t egl_convert_fb(int fd, void *data, uint32_t handle,
                                     int width, int height, int x, int y)
 {
   egl_ctx *ctx = data;
@@ -468,7 +457,7 @@ drm_private uint32_t egl_convert_fb(void *data, uint32_t handle,
      1.0f,  1.0f,
   };
 
-  dma_fd = egl_handle_to_fd(ctx->fd, handle);
+  dma_fd = egl_handle_to_fd(fd, handle);
   if (dma_fd < 0) {
     DRM_ERROR("failed to get dma fd\n");
     return 0;
@@ -507,7 +496,7 @@ drm_private uint32_t egl_convert_fb(void *data, uint32_t handle,
     goto err_del_texture;
   }
 
-  fb = egl_bo_to_fb(ctx->fd, bo, ctx->format, ctx->modifier);
+  fb = egl_bo_to_fb(fd, bo, ctx->format, ctx->modifier);
   gbm_surface_release_buffer(ctx->gbm_surfaces[ctx->current_surface], bo);
 
 err_del_texture:

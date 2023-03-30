@@ -472,8 +472,24 @@ static drm_ctx *drm_get_ctx(int fd)
   uint32_t i, max_fps, count_crtcs;
   const char *config;
 
-  if (ctx->inited)
+  if (fd < 0)
     return ctx;
+
+  if (ctx->inited) {
+    /* Make sure the ctx's fd is the same as the input fd */
+    int flags = fcntl(ctx->fd, F_GETFL, 0);
+    if (fcntl(fd, F_GETFL, 0) == flags) {
+      fcntl(ctx->fd, F_SETFL, flags ^ O_NONBLOCK);
+      if (fcntl(fd, F_GETFL, 0) != flags) {
+        fcntl(ctx->fd, F_SETFL, flags);
+        return ctx;
+      }
+    }
+
+    close(ctx->fd);
+    ctx->fd = dup(fd);
+    return ctx;
+  }
 
   /* Failed already */
   if (ctx->fd < 0)
@@ -904,7 +920,7 @@ static int drm_crtc_create_fb(drm_ctx *ctx, drm_crtc *crtc,
   }
 
   cursor_state->fb =
-    egl_convert_fb(crtc->egl_ctx, handle, width, height, off_x, off_y);
+    egl_convert_fb(ctx->fd, crtc->egl_ctx, handle, width, height, off_x, off_y);
   if (!cursor_state->fb) {
     DRM_ERROR("CRTC[%d]: failed to create FB\n", crtc->crtc_id);
     return -1;
