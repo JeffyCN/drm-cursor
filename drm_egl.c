@@ -13,9 +13,11 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <malloc.h>
 #include <unistd.h>
 
+#include <drm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
@@ -173,8 +175,8 @@ static int egl_flush_surfaces(egl_ctx *ctx)
   return 0;
 }
 
-drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
-                               int format, uint64_t modifier)
+drm_private void *egl_init_ctx(int fd, int num_surfaces, int format,
+                               uint64_t modifier)
 {
   PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display;
 
@@ -211,11 +213,13 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
     return NULL;
   }
 
-  ctx->width = width;
-  ctx->height = height;
   ctx->format = format;
   ctx->modifier = modifier;
   ctx->num_surfaces = num_surfaces;
+  ctx->width = ctx->height = 0;
+
+  for (i = 0; i < ctx->num_surfaces; i++)
+    ctx->egl_surfaces[i] = EGL_NO_SURFACE;
 
   ctx->gbm_dev = gbm_create_device(fd);
   if (!ctx->gbm_dev) {
@@ -283,13 +287,7 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
     goto err;
   }
 
-  if (egl_flush_surfaces(ctx) < 0) {
-    DRM_ERROR("failed to flush surfaces\n");
-    goto err;
-  }
-
-  eglMakeCurrent(ctx->egl_display, ctx->egl_surfaces[ctx->current_surface],
-                 ctx->egl_surfaces[ctx->current_surface],
+  eglMakeCurrent(ctx->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                  ctx->egl_context);
 
   source = vertex_shader_source;
@@ -334,29 +332,10 @@ drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height,
 
   glUniform1i(glGetUniformLocation(ctx->program, "tex"), 0);
 
-  glViewport(0, 0, width, height);
-
   return ctx;
 err:
   egl_free_ctx(ctx);
   return NULL;
-}
-
-static int egl_handle_to_fd(int fd, uint32_t handle)
-{
-  struct drm_prime_handle args = {
-    .fd = -1,
-    .handle = handle,
-  };
-  int ret;
-
-  ret = drmIoctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &args);
-  if (ret < 0) {
-    DRM_ERROR("failed to get fd (%d)\n", errno);
-    return ret;
-  }
-
-  return args.fd;
 }
 
 static uint32_t egl_bo_to_fb(int fd, struct gbm_bo* bo, int format,
@@ -441,7 +420,8 @@ static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd, int width, int height)
 }
 
 drm_private uint32_t egl_convert_fb(int fd, void *data, uint32_t handle,
-                                    int width, int height, int x, int y)
+                                    int w, int h, int scaled_w, int scaled_h,
+                                    int x, int y)
 {
   egl_ctx *ctx = data;
   GLint position;
@@ -457,10 +437,17 @@ drm_private uint32_t egl_convert_fb(int fd, void *data, uint32_t handle,
      1.0f,  1.0f,
   };
 
-  dma_fd = egl_handle_to_fd(fd, handle);
-  if (dma_fd < 0) {
-    DRM_ERROR("failed to get dma fd\n");
+  if (drmPrimeHandleToFD(fd, handle, DRM_CLOEXEC, &dma_fd) < 0) {
+    DRM_ERROR("failed to get dma fd (-%d)\n", errno);
     return 0;
+  }
+
+  if (ctx->width != scaled_w || ctx->height != scaled_h) {
+    ctx->width = scaled_w;
+    ctx->height = scaled_h;
+    glViewport(0, 0, ctx->width, ctx->height);
+
+    egl_flush_surfaces(ctx);
   }
 
   ctx->current_surface = (ctx->current_surface + 1) % ctx->num_surfaces;
@@ -482,7 +469,7 @@ drm_private uint32_t egl_convert_fb(int fd, void *data, uint32_t handle,
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
 
-  if (egl_attach_dmabuf(ctx, dma_fd, width, height) < 0) {
+  if (egl_attach_dmabuf(ctx, dma_fd, w, h) < 0) {
     DRM_ERROR("failed to attach dmabuf\n");
     goto err_del_texture;
   }

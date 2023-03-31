@@ -19,8 +19,8 @@
 
 #include "drm_common.h"
 
-drm_private void *egl_init_ctx(int fd, int num_surfaces, int width, int height, int format, uint64_t modifier);
+drm_private void *egl_init_ctx(int fd, int num_surfaces, int format, uint64_t modifier);
 drm_private void egl_free_ctx(void *data);
-drm_private uint32_t egl_convert_fb(int fd, void *data, uint32_t handle, int width, int height, int x, int y);
+drm_private uint32_t egl_convert_fb(int fd, void *data, uint32_t handle, int w, int h, int scaled_w, int scaled_h, int x, int y);
 
 #endif

@@ -911,8 +911,7 @@ static int drm_crtc_create_fb(drm_ctx *ctx, drm_crtc *crtc,
       modifier = 0;
     }
 
-    crtc->egl_ctx = egl_init_ctx(ctx->fd, ctx->num_surfaces,
-                                 scaled_w, scaled_h, format, modifier);
+    crtc->egl_ctx = egl_init_ctx(ctx->fd, ctx->num_surfaces, format, modifier);
     if (!crtc->egl_ctx) {
       DRM_ERROR("CRTC[%d]: failed to init egl ctx\n", crtc->crtc_id);
       return -1;
@@ -920,7 +919,8 @@ static int drm_crtc_create_fb(drm_ctx *ctx, drm_crtc *crtc,
   }
 
   cursor_state->fb =
-    egl_convert_fb(ctx->fd, crtc->egl_ctx, handle, width, height, off_x, off_y);
+    egl_convert_fb(ctx->fd, crtc->egl_ctx, handle, width, height,
+                   scaled_w, scaled_h, off_x, off_y);
   if (!cursor_state->fb) {
     DRM_ERROR("CRTC[%d]: failed to create FB\n", crtc->crtc_id);
     return -1;
