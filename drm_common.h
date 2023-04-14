@@ -21,7 +21,7 @@
 #include <stdint.h>
 #include <sys/time.h>
 
-#define LIBDRM_CURSOR_VERSION "1.4.0~20220929"
+#define LIBDRM_CURSOR_VERSION "1.4.1~20230414"
 
 #define drm_private __attribute__((visibility("hidden")))
 
