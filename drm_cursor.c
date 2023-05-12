@@ -450,6 +450,9 @@ static const char *drm_get_config(drm_ctx *ctx, const char *name)
   if (!config)
     return NULL;
 
+  if (config[strlen(name)] == '\n' || config[strlen(name)] == '\r')
+    return NULL;
+
   sscanf(config + strlen(name), "%4095s", buf);
   return buf;
 }
