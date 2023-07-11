@@ -387,6 +387,11 @@ static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd, int width, int height)
     EGL_DMA_BUF_PLANE0_FD_EXT, dma_fd,
     EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
     EGL_DMA_BUF_PLANE0_PITCH_EXT, width * 4,
+
+    /* Old mali needs extra attributes */
+    EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC601_EXT,
+    EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT,
+
     EGL_NONE,
   };
 
