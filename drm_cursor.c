@@ -1065,8 +1065,10 @@ retry:
   }
 
 error:
-  if (crtc->egl_ctx)
+  if (crtc->egl_ctx) {
     egl_free_ctx(crtc->egl_ctx);
+    crtc->egl_ctx = NULL;
+  }
 
   drm_crtc_disable_cursor(ctx, crtc);
 
