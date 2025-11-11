@@ -412,7 +412,7 @@ static int egl_attach_dmabuf(egl_ctx *ctx, int dma_fd, int width, int height)
     return -1;
   }
 
-  image = create_image(ctx->egl_display, ctx->egl_context,
+  image = create_image(ctx->egl_display, EGL_NO_CONTEXT,
                        EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
   if (image == EGL_NO_IMAGE) {
     DRM_ERROR("failed to create egl image: 0x%x\n", eglGetError());
