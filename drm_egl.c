@@ -151,7 +151,7 @@ static int egl_flush_surfaces(egl_ctx *ctx)
     if (!ctx->modifier)
       ctx->gbm_surfaces[i] =
         gbm_surface_create(ctx->gbm_dev, ctx->width, ctx->height,
-                           ctx->format, 0);
+                           ctx->format, GBM_BO_USE_SCANOUT);
     else
       ctx->gbm_surfaces[i] =
         gbm_surface_create_with_modifiers(ctx->gbm_dev,
