@@ -1,7 +1,6 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <xf86drm.h>
 #include <sys/mman.h>
 
 #include <xf86drm.h>
@@ -36,7 +35,7 @@ int main(int argc, const char **argv)
   int *ptr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED,
                   fd, map_arg.offset);
   for (int i = 0; i < width * height; i++)
-        ptr[i] = 0x4F000000 | (i % width) * 2 << 16 | (i / height) << 8;
+        ptr[i] = 0x4F000000 | (i % width) * 2 << 16 | (i / width) << 8;
 
   if (argc > 1)
     crtc_id = atoi(argv[1]);

@@ -53,3 +53,20 @@ executable(
     install : get_option('install-test'),
 )
 
+executable(
+    'afbc-test',
+    'afbc-test.c',
+    dependencies : libdrm_dep,
+    build_by_default : get_option('install-test'),
+    install : get_option('install-test'),
+    install_dir : get_option('bindir'),
+)
+
+executable(
+    'kms-roundtrip',
+    [ libdrm_cursor_srcs, 'kms-roundtrip.c' ],
+    dependencies : libdrm_cursor_deps,
+    build_by_default : get_option('install-test'),
+    install : get_option('install-test'),
+    install_dir : get_option('bindir'),
+)
