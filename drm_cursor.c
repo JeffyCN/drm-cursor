@@ -134,6 +134,7 @@ typedef struct {
 
   drm_plane *plane;
   uint32_t prefer_plane_id;
+  int force_afbc;
 
   drm_cursor_state cursor_next;
   drm_cursor_state cursor_curr;
@@ -718,6 +719,10 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
   if (linear_only && !plane->can_linear)
     goto err;
 
+  /* Latched fallback: this crtc was proven to need AFBC */
+  if (crtc->force_afbc && !plane->can_afbc)
+    goto err;
+
   /* Not for this CRTC */
   if (!(plane->plane->possible_crtcs & (1 << crtc->crtc_pipe)))
     goto err;
@@ -908,7 +913,7 @@ static int drm_crtc_create_fb(drm_ctx *ctx, drm_crtc *crtc,
     uint64_t modifier;
     int format;
 
-    if (!crtc->plane->can_linear) {
+    if (crtc->force_afbc || !crtc->plane->can_linear) {
       /* The AFBC scanner requires a BGR byte order format */
       format = DRM_FORMAT_ABGR8888;
       modifier = DRM_AFBC_MODIFIER;
@@ -936,6 +941,29 @@ static int drm_crtc_create_fb(drm_ctx *ctx, drm_crtc *crtc,
   return 0;
 }
 
+/* Retry the cursor on the same plane with the AFBC format after a
+ * linear scanout rejection */
+static int drm_crtc_fallback_afbc(drm_ctx *ctx, drm_crtc *crtc,
+                                  drm_cursor_state *cursor_state)
+{
+  if (crtc->force_afbc || !crtc->plane || !crtc->plane->can_afbc)
+    return -1;
+
+  if (crtc->sw_ctx) {
+    sw_free_ctx(crtc->sw_ctx);
+    crtc->sw_ctx = NULL;
+  }
+  crtc->force_afbc = 1;
+
+  DRM_INFO("CRTC[%d]: linear scanout rejected, falling back to AFBC\n",
+           crtc->crtc_id);
+
+  if (drm_crtc_create_fb(ctx, crtc, cursor_state) < 0)
+    return -1;
+
+  return drm_crtc_update_cursor(ctx, crtc, cursor_state);
+}
+
 static void *drm_crtc_thread_fn(void *data)
 {
   drm_ctx *ctx = drm_get_ctx(-1);
@@ -944,6 +972,7 @@ static void *drm_crtc_thread_fn(void *data)
   drm_cursor_state cursor_state;
   uint64_t duration;
   char name[256];
+  int ret;
 
   DRM_DEBUG("CRTC[%d]: thread started\n", crtc->crtc_id);
 
@@ -1012,7 +1041,17 @@ static void *drm_crtc_thread_fn(void *data)
       if (drm_crtc_create_fb(ctx, crtc, &cursor_state) < 0)
         goto error;
 
-      if (drm_crtc_update_cursor(ctx, crtc, &cursor_state) < 0) {
+      ret = drm_crtc_update_cursor(ctx, crtc, &cursor_state);
+      if (ret == -EINVAL && !crtc->force_afbc && crtc->plane->can_afbc) {
+        /* drop the rejected linear fb and retry as AFBC; also forget
+         * its id, the kernel hands it right back to the new fb and
+         * the unchanged-check would otherwise skip the scanout */
+        drmModeRmFB(ctx->fd, cursor_state.fb);
+        crtc->cursor_curr.fb = 0;
+        ret = drm_crtc_fallback_afbc(ctx, crtc, &cursor_state);
+      }
+
+      if (ret < 0) {
         DRM_ERROR("CRTC[%d]: failed to set cursor\n", crtc->crtc_id);
         goto error;
       }
