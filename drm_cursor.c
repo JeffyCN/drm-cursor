@@ -21,25 +21,22 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#include <gbm.h>
-
 #include "drm_common.h"
-#include "drm_egl.h"
+#include "drm_sw.h"
 
 #define DRM_CURSOR_CONFIG_FILE "/etc/drm-cursor.conf"
 #define OPT_DEBUG "debug="
 #define OPT_LOG_FILE "log-file="
 #define OPT_HIDE "hide="
 #define OPT_ALLOW_OVERLAY "allow-overlay="
-#define OPT_PREFER_AFBC "prefer-afbc="
 #define OPT_PREFER_PLANE "prefer-plane="
 #define OPT_PREFER_PLANES "prefer-planes="
 #define OPT_CRTC_BLOCKLIST "crtc-blocklist="
-#define OPT_NUM_SURFACES "num-surfaces="
 #define OPT_MAX_FPS "max-fps="
 #define OPT_ATOMIC "atomic="
 #define OPT_SCALE "scale="
@@ -144,13 +141,13 @@ typedef struct {
   pthread_t thread;
   pthread_cond_t cond;
   pthread_mutex_t mutex;
+  int primitives_init;
   drm_thread_state state;
 
-  void *egl_ctx;
+  void *sw_ctx;
 
   int verified;
 
-  int use_afbc_modifier;
   int blocked;
   int async_commit;
 
@@ -166,9 +163,7 @@ typedef struct {
   drmModePlaneResPtr pres;
   drmModeRes *res;
 
-  int prefer_afbc_modifier;
   int allow_overlay;
-  int num_surfaces;
   int inited;
   int atomic;
   int hide;
@@ -186,10 +181,11 @@ drm_private FILE *g_log_fp = NULL;
 
 static inline uint64_t drm_curr_time(void)
 {
-  struct timeval tv;
+  struct timespec ts;
 
-  gettimeofday(&tv, NULL);
-  return tv.tv_sec + tv.tv_usec / 1000;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  /* Milliseconds, to match min_interval */
+  return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static int drm_plane_get_prop(drm_ctx *ctx, drm_plane *plane, drm_plane_prop p)
@@ -293,6 +289,10 @@ static int drm_plane_set_prop_max(drm_ctx *ctx, drm_plane *plane,
     return -1;
 
   prop = drmModeGetProperty(ctx->fd, plane->props->props[prop_idx]);
+  if (!prop || prop->count_values < 1) {
+    drmModeFreeProperty(prop);
+    return -1;
+  }
   drmModeObjectSetProperty (ctx->fd, plane->plane_id,
                             DRM_MODE_OBJECT_PLANE,
                             plane->props->props[prop_idx],
@@ -453,7 +453,8 @@ static const char *drm_get_config(drm_ctx *ctx, const char *name)
   if (config[strlen(name)] == '\n' || config[strlen(name)] == '\r')
     return NULL;
 
-  sscanf(config + strlen(name), "%4095s", buf);
+  if (sscanf(config + strlen(name), "%4095s", buf) != 1)
+    return NULL;
   return buf;
 }
 
@@ -472,7 +473,8 @@ static drm_ctx *drm_get_ctx(int fd)
   drm_ctx *ctx = &g_drm_ctx;
   uint32_t prefer_planes[DRM_MAX_CRTCS] = { 0, };
   uint32_t prefer_plane = 0;
-  uint32_t i, max_fps, count_crtcs;
+  uint32_t i, count_crtcs;
+  int max_fps;
   const char *config;
 
   if (fd < 0)
@@ -489,8 +491,14 @@ static drm_ctx *drm_get_ctx(int fd)
       }
     }
 
+    int nfd = dup(fd);
+
+    if (nfd < 0)
+      return ctx;
     close(ctx->fd);
-    ctx->fd = dup(fd);
+    ctx->fd = nfd;
+    drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+    drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_ATOMIC, 1);
     return ctx;
   }
 
@@ -521,16 +529,6 @@ static drm_ctx *drm_get_ctx(int fd)
   if (ctx->hide)
     DRM_INFO("invisible cursors\n");
 
-#ifdef PREFER_AFBC_MODIFIER
-  ctx->prefer_afbc_modifier = 1;
-#endif
-
-  ctx->prefer_afbc_modifier =
-    drm_get_config_int(ctx, OPT_PREFER_AFBC, ctx->prefer_afbc_modifier);
-
-  if (ctx->prefer_afbc_modifier)
-    DRM_DEBUG("prefer ARM AFBC modifier\n");
-
   ctx->allow_overlay = drm_get_config_int(ctx, OPT_ALLOW_OVERLAY, 0);
 
   if (ctx->allow_overlay)
@@ -538,7 +536,6 @@ static drm_ctx *drm_get_ctx(int fd)
 
   drmSetClientCap(ctx->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
 
-  ctx->num_surfaces = drm_get_config_int(ctx, OPT_NUM_SURFACES, 8);
 
   max_fps = drm_get_config_int(ctx, OPT_MAX_FPS, 0);
   if (max_fps <= 0)
@@ -583,7 +580,7 @@ static drm_ctx *drm_get_ctx(int fd)
   /* Allow specifying prefer planes */
   if (!(config = getenv("DRM_CURSOR_PREFER_PLANES")))
     config = drm_get_config(ctx, OPT_PREFER_PLANES);
-  for (i = 0; config && i < count_crtcs; i++) {
+  for (i = 0; config && i < count_crtcs && i < DRM_MAX_CRTCS; i++) {
     prefer_planes[i] = atoi(config);
 
     config = strchr(config, ',');
@@ -592,7 +589,7 @@ static drm_ctx *drm_get_ctx(int fd)
   }
 
   /* Fetch all CRTCs */
-  for (i = 0; i < count_crtcs; i++) {
+  for (i = 0; i < count_crtcs && ctx->num_crtcs < DRM_MAX_CRTCS; i++) {
     drmModeCrtcPtr c = drmModeGetCrtc(ctx->fd, ctx->res->crtcs[i]);
     drm_crtc *crtc = &ctx->crtcs[ctx->num_crtcs];
 
@@ -601,7 +598,8 @@ static drm_ctx *drm_get_ctx(int fd)
 
     crtc->crtc_id = c->crtc_id;
     crtc->crtc_pipe = i;
-    crtc->prefer_plane_id = prefer_planes[i] ? prefer_planes[i] : prefer_plane;
+    crtc->prefer_plane_id = i < DRM_MAX_CRTCS ? prefer_planes[i] :
+                            prefer_plane;
 
     DRM_DEBUG("found %d CRTC: %d(%d) (%dx%d) prefer plane: %d\n",
               ctx->num_crtcs, c->crtc_id, i, c->width, c->height,
@@ -685,14 +683,14 @@ err_free_configs:
   return NULL;
 }
 
-#define drm_crtc_bind_plane_force(ctx, crtc, plane) \
-  drm_crtc_bind_plane(ctx, crtc, plane, 1)
+#define drm_crtc_bind_plane_force(ctx, crtc, plane, linear_only) \
+  drm_crtc_bind_plane(ctx, crtc, plane, 1, linear_only)
 
-#define drm_crtc_bind_plane_cursor(ctx, crtc, plane) \
-  drm_crtc_bind_plane(ctx, crtc, plane, 0)
+#define drm_crtc_bind_plane_cursor(ctx, crtc, plane, linear_only) \
+  drm_crtc_bind_plane(ctx, crtc, plane, 0, linear_only)
 
 static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
-                               int allow_overlay)
+                               int allow_overlay, int linear_only)
 {
   drm_plane *plane;
   uint64_t value;
@@ -716,6 +714,10 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
   if (!plane->can_afbc && !plane->can_linear)
     goto err;
 
+  /* Linear first: AFBC is the fallback, not the preference */
+  if (linear_only && !plane->can_linear)
+    goto err;
+
   /* Not for this CRTC */
   if (!(plane->plane->possible_crtcs & (1 << crtc->crtc_pipe)))
     goto err;
@@ -735,13 +737,9 @@ static int drm_crtc_bind_plane(drm_ctx *ctx, drm_crtc *crtc, uint32_t plane_id,
   if (plane->cursor_plane)
     DRM_INFO("CRTC[%d]: using cursor plane\n", crtc->crtc_id);
 
-  if (ctx->prefer_afbc_modifier && plane->can_afbc)
-    crtc->use_afbc_modifier = 1;
-  else if (!plane->can_linear)
-    crtc->use_afbc_modifier = 1;
-
+  /* Auto: AFBC only when this plane cannot scan out linear */
   DRM_DEBUG("CRTC[%d]: bind plane: %d%s\n", crtc->crtc_id, plane->plane_id,
-            crtc->use_afbc_modifier ? "(AFBC)" : "");
+            plane->can_linear ? "" : "(AFBC)");
 
   crtc->plane = plane;
 
@@ -790,6 +788,9 @@ static int drm_crtc_update_offsets(drm_ctx *ctx, drm_crtc *crtc,
 
   width = cursor_state->width;
   height = cursor_state->height;
+
+  if (width <= 0 || height <= 0)
+    return -1;
 
   if (ctx->scale_from) {
     scale_x = scale_y =
@@ -858,6 +859,8 @@ static int drm_crtc_update_cursor(drm_ctx *ctx, drm_crtc *crtc,
   if (crtc->cursor_curr.fb == cursor_state->fb &&
       crtc->cursor_curr.scaled_x == cursor_state->scaled_x &&
       crtc->cursor_curr.scaled_y == cursor_state->scaled_y &&
+      crtc->cursor_curr.scaled_w == cursor_state->scaled_w &&
+      crtc->cursor_curr.scaled_h == cursor_state->scaled_h &&
       crtc->cursor_curr.off_x == cursor_state->off_x &&
       crtc->cursor_curr.off_y == cursor_state->off_y) {
     crtc->cursor_curr = *cursor_state;
@@ -901,28 +904,28 @@ static int drm_crtc_create_fb(drm_ctx *ctx, drm_crtc *crtc,
             crtc->crtc_id, handle, width, height,
             scaled_w, scaled_h, off_x, off_y);
 
-  if (!crtc->egl_ctx) {
+  if (!crtc->sw_ctx) {
     uint64_t modifier;
     int format;
 
-    if (crtc->use_afbc_modifier) {
-      /* Mali only support AFBC with BGR formats now */
-      format = GBM_FORMAT_ABGR8888;
+    if (!crtc->plane->can_linear) {
+      /* The AFBC scanner requires a BGR byte order format */
+      format = DRM_FORMAT_ABGR8888;
       modifier = DRM_AFBC_MODIFIER;
     } else {
-      format = GBM_FORMAT_ARGB8888;
+      format = DRM_FORMAT_ARGB8888;
       modifier = 0;
     }
 
-    crtc->egl_ctx = egl_init_ctx(ctx->fd, ctx->num_surfaces, format, modifier);
-    if (!crtc->egl_ctx) {
-      DRM_ERROR("CRTC[%d]: failed to init egl ctx\n", crtc->crtc_id);
+    crtc->sw_ctx = sw_init_ctx(ctx->fd, format, modifier);
+    if (!crtc->sw_ctx) {
+      DRM_ERROR("CRTC[%d]: failed to init conversion ctx\n", crtc->crtc_id);
       return -1;
     }
   }
 
   cursor_state->fb =
-    egl_convert_fb(ctx->fd, crtc->egl_ctx, handle, width, height,
+    sw_convert_fb(ctx->fd, crtc->sw_ctx, handle, width, height,
                    scaled_w, scaled_h, off_x, off_y);
   if (!cursor_state->fb) {
     DRM_ERROR("CRTC[%d]: failed to create FB\n", crtc->crtc_id);
@@ -1053,7 +1056,7 @@ next:
     duration = drm_curr_time() - crtc->last_update_time;
     if (duration < ctx->min_interval)
       usleep((ctx->min_interval - duration) * 1000);
-    crtc->last_update_time = drm_curr_time();;
+    crtc->last_update_time = drm_curr_time();
     continue;
 retry:
     /* Force setting cursor in next request */
@@ -1065,9 +1068,9 @@ retry:
   }
 
 error:
-  if (crtc->egl_ctx) {
-    egl_free_ctx(crtc->egl_ctx);
-    crtc->egl_ctx = NULL;
+  if (crtc->sw_ctx) {
+    sw_free_ctx(crtc->sw_ctx);
+    crtc->sw_ctx = NULL;
   }
 
   drm_crtc_disable_cursor(ctx, crtc);
@@ -1090,6 +1093,7 @@ error:
 static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
 {
   uint32_t i;
+  int pass;
 
   /* Update CRTC if unavailable */
   if (drm_crtc_valid(crtc) < 0)
@@ -1099,18 +1103,25 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
   if (crtc->plane)
     return 1;
 
-  /* Try specific plane */
+  /* Try specific plane (explicit user choice wins over auto) */
   if (crtc->prefer_plane_id)
-    drm_crtc_bind_plane_force(ctx, crtc, crtc->prefer_plane_id);
+    drm_crtc_bind_plane_force(ctx, crtc, crtc->prefer_plane_id, 0);
 
-  /* Try cursor plane */
-  for (i = 0; !crtc->plane && i < ctx->pres->count_planes; i++)
-    drm_crtc_bind_plane_cursor(ctx, crtc, ctx->pres->planes[i]);
+  /* Two passes: linear-capable planes first, AFBC-only as fallback */
+  for (pass = 0; !crtc->plane && pass < 2; pass++) {
+    int linear_only = (pass == 0);
 
-  /* Fallback to any available overlay plane */
-  if (ctx->allow_overlay) {
-    for (i = ctx->pres->count_planes; !crtc->plane && i; i--)
-      drm_crtc_bind_plane_force(ctx, crtc, ctx->pres->planes[i - 1]);
+    /* Try cursor planes */
+    for (i = 0; !crtc->plane && i < ctx->pres->count_planes; i++)
+      drm_crtc_bind_plane_cursor(ctx, crtc, ctx->pres->planes[i],
+                                 linear_only);
+
+    /* Fallback to overlay planes */
+    if (ctx->allow_overlay) {
+      for (i = ctx->pres->count_planes; !crtc->plane && i; i--)
+        drm_crtc_bind_plane_force(ctx, crtc, ctx->pres->planes[i - 1],
+                                  linear_only);
+    }
   }
 
   if (!crtc->plane) {
@@ -1120,9 +1131,24 @@ static int drm_crtc_prepare(drm_ctx *ctx, drm_crtc *crtc)
 
   crtc->state = IDLE;
 
+  /* Revival path: the dead worker left the primitives initialized.
+   * Lock/unlock first to drain a dying worker still holding the lock */
+  pthread_mutex_lock(&crtc->mutex);
+  pthread_mutex_unlock(&crtc->mutex);
+  if (crtc->primitives_init) {
+    pthread_cond_destroy(&crtc->cond);
+    pthread_mutex_destroy(&crtc->mutex);
+  }
   pthread_cond_init(&crtc->cond, NULL);
   pthread_mutex_init(&crtc->mutex, NULL);
-  pthread_create(&crtc->thread, NULL, drm_crtc_thread_fn, crtc);
+  crtc->primitives_init = 1;
+  if (pthread_create(&crtc->thread, NULL, drm_crtc_thread_fn, crtc)) {
+    DRM_ERROR("CRTC[%d]: failed to create thread\n", crtc->crtc_id);
+    drm_free_plane(crtc->plane);
+    crtc->plane = NULL;
+    crtc->state = FATAL_ERROR;
+    return -1;
+  }
 
   return 0;
 }
@@ -1173,6 +1199,12 @@ static int drm_set_cursor(int fd, uint32_t crtc_id, uint32_t handle,
 
   if (drm_crtc_prepare(ctx, crtc) < 0)
     return -1;
+
+  if (handle && (!width || !height)) {
+    DRM_ERROR("CRTC[%d]: invalid cursor size %ux%u\n",
+              crtc->crtc_id, width, height);
+    return -1;
+  }
 
   DRM_DEBUG("CRTC[%d]: request setting new cursor %d (%dx%d)\n",
             crtc->crtc_id, handle, width, height);
@@ -1236,7 +1268,11 @@ static int drm_move_cursor(int fd, uint32_t crtc_id, int x, int y)
   if (!crtc)
     return -1;
 
-  if (crtc->state == FATAL_ERROR || drm_crtc_prepare(ctx, crtc) < 0)
+  /* Prepare first: it revives a FATAL_ERROR crtc by rebinding */
+  if (drm_crtc_prepare(ctx, crtc) < 0)
+    return -1;
+
+  if (crtc->state == FATAL_ERROR)
     return -1;
 
   if (drm_crtc_valid(crtc) < 0)

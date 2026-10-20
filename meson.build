@@ -10,29 +10,18 @@ pkgconfig = import('pkgconfig')
 
 libdrm_dep = dependency('libdrm', version : '>= 2.4.0')
 libthreads_dep = dependency('threads')
-libgbm_dep = dependency('gbm')
-libegl_dep = dependency('egl')
-libgles_dep = dependency('glesv2')
 
 libdrm_cursor_deps = [
     libdrm_dep,
     libthreads_dep,
-    libgbm_dep,
-    libegl_dep,
-    libgles_dep,
 ]
 
 libdrm_cursor_srcs = [
     'drm_cursor.c',
-    'drm_egl.c',
+    'drm_sw.c',
 ]
 
 add_project_arguments(['-D_GNU_SOURCE'], language: 'c')
-
-if get_option('prefer-afbc')
-    message('Prefer ARM AFBC modifier')
-    add_project_arguments(['-DPREFER_AFBC_MODIFIER'], language: 'c')
-endif
 
 libdrm_cursor = shared_library(
     'drm-cursor',
@@ -63,3 +52,4 @@ executable(
     dependencies : libdrm_cursor_deps,
     install : get_option('install-test'),
 )
+
